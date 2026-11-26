@@ -72,6 +72,14 @@ $tests = @(
             (Join-Path $RepoRoot 'mods\weighty-aim\core\test_weighty_aim.c')
         )
         Include = (Join-Path $RepoRoot 'mods\weighty-aim\core')
+    },
+    @{
+        Name    = 'test_free_aim'
+        Sources = @(
+            (Join-Path $RepoRoot 'mods\free-aim\core\free_aim.c'),
+            (Join-Path $RepoRoot 'mods\free-aim\core\test_free_aim.c')
+        )
+        Include = (Join-Path $RepoRoot 'mods\free-aim\core')
     }
 )
 

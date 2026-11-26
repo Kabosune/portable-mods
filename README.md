@@ -8,7 +8,10 @@ Engine-agnostic gameplay mod cores and porting blueprints designed to be dropped
 | :--- | :--- | :--- | :--- |
 | **`quake-movement`** | Pure C11 (`qm_physics.h` / `.c`) | 6-preset arena/movement-shooter physics solver (Quake VQ3, CPMA, Half-Life, Apex Legends, Deadlock, Custom) in Z-up meters. | [mods/quake-movement/PORTING.md](mods/quake-movement/PORTING.md) |
 | **`weighty-aim`** | Pure C11 (`weighty_aim.h` / `.c`) | Per-player stick curves (Classic, Linear, Balanced, Custom 1–3 cubic Bezier), radial deadzones, Look Acceleration turn boost, live curve graph data API, Force Original Aim, and GyroWiki gyro pipeline. | [mods/weighty-aim/PORTING.md](mods/weighty-aim/PORTING.md) |
+| **`free-aim`** | Pure C11 (`free_aim.h` / `.c`) | Unlocked free-aim / dynamic reticle system (Bodycam / Receiver / Wii-shooter style): elliptical zone, Camera Share/Lead, jerk-free C1 Catch-Up, damped weapon spring, Edge Auto-Turn, ADS scaling, delta-only sway, and debug/telemetry tools. | [mods/free-aim/PORTING.md](mods/free-aim/PORTING.md) |
 | **`fpv-drone`** | `libfpv` git submodule (C ABI) | Drop-in Betaflight SimITL 1 kHz FPV quadcopter with hidden SDL3 radio input, Betaflight OSD, ImGui settings overlay, procedural motor audio, and world collision/wind hooks. | [mods/fpv-drone/PORTING.md](mods/fpv-drone/PORTING.md) |
+
+> **Composing `weighty-aim` + `free-aim`:** Both modules are intentionally standalone. A game can adopt input conditioning (`weighty-aim`), unlocked free-aim (`free-aim`), or stack them together by feeding `weighty-aim`'s curved stick and gyro degree outputs directly into `free-aim`'s `fa_step()`.
 
 See [docs/PORTING_CONVENTIONS.md](docs/PORTING_CONVENTIONS.md) for cross-mod architecture, discovery-first rules, and commit hygiene.
 
@@ -43,7 +46,7 @@ Each module's `PORTING.md` is written as a self-contained porting blueprint:
 
 ## Running Core Unit Tests
 
-The pure-C11 core libraries (`quake-movement` and `weighty-aim`) have zero OS or third-party dependencies.
+The pure-C11 core libraries (`quake-movement`, `weighty-aim`, and `free-aim`) have zero OS or third-party dependencies.
 
 On Windows (PowerShell), auto-detects `clang`, `gcc` (including MSYS2 MinGW64/UCRT64), `zig cc`, or MSVC `cl.exe`:
 
@@ -56,6 +59,7 @@ Or compile manually with any C11 compiler:
 ```sh
 gcc -std=c11 -Wall -Wextra -Werror mods/quake-movement/core/qm_physics.c mods/quake-movement/core/test_qm_physics.c -lm -o test_qm_physics && ./test_qm_physics
 gcc -std=c11 -Wall -Wextra -Werror mods/weighty-aim/core/weighty_aim.c mods/weighty-aim/core/test_weighty_aim.c -lm -o test_weighty_aim && ./test_weighty_aim
+gcc -std=c11 -Wall -Wextra -Werror mods/free-aim/core/free_aim.c mods/free-aim/core/test_free_aim.c -lm -o test_free_aim && ./test_free_aim
 ```
 
 ---

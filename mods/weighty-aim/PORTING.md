@@ -5,6 +5,7 @@ You are porting the stick/camera response system, Look Acceleration (turn boost)
 Reference implementation (public, MIT):
 - `https://github.com/Kabosune/perfect_dark_weighty_aim` (branch `weighty-aim`) — see `WEIGHTY_AIM_DESIGN.md`, `port/src/weightyaim.c`, and `port/src/weightyaimmenu.c`.
 - Portable pure-C11 core in this repository: [`core/weighty_aim.h`](core/weighty_aim.h) and [`core/weighty_aim.c`](core/weighty_aim.c) (port the behavior, not N64-specific plumbing).
+- Looking for the unlocked free-aim / dynamic reticle system? It lives separately in [`mods/free-aim/PORTING.md`](../free-aim/PORTING.md) so games can adopt input conditioning, free-aim, or both together.
 
 ---
 
