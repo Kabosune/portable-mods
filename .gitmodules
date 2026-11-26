@@ -1,0 +1,3 @@
+[submodule "mods/fpv-drone/vendor/libfpv"]
+	path = mods/fpv-drone/vendor/libfpv
+	url = https://github.com/hammerill/libfpv
