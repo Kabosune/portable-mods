@@ -822,9 +822,13 @@ void qm_step(
                 }
             }
 
-            /* CPMA pure A/D strafe accel vs standard VQ3/Source PM_AirAccelerate */
-            int pure_strafe = (fabsf(wf) < 1e-3f && fabsf(wr) > 1e-3f);
-            int pure_fwd = (fabsf(wf) > 1e-3f && fabsf(wr) < 1e-3f);
+            /* CPMA pure A/D strafe accel vs standard VQ3/Source PM_AirAccelerate.
+             * Allow minor-axis bleed up to 22% of the major axis so controller
+             * analog sticks still trigger pure-strafe and CPM_AirControl. */
+            float abs_wf = fabsf(wf);
+            float abs_wr = fabsf(wr);
+            int pure_strafe = (abs_wr > 1e-3f && abs_wf <= 0.22f * abs_wr);
+            int pure_fwd = (abs_wf > 1e-3f && abs_wr <= 0.22f * abs_wf);
             float eff_accel = params->air_accel;
             float eff_cap = (params->air_wish_cap > 0.0f && params->air_wish_cap < wishspeed)
                 ? params->air_wish_cap

@@ -105,7 +105,19 @@ Never overwrite player velocity outside normal on-foot locomotion. Immediately s
 
 ---
 
-## 6. Phased Implementation & Verification Plan
+## 6. Adapter Pitfalls & Porting Lessons
+
+Lessons from multi-engine ports (including `rac1-mods` / `rac-rs`):
+
+- **Hook placement:** Run the adapter *after* the game's input & locomotion state machine and *before* collision/position integration. Hooking earlier lets native air, crouch, or skid states overwrite your velocity every tick.
+- **Native button conflicts (auto-bhop & crouch-slide):** If the native engine reacts to held Jump/Crouch buttons, pulse native Jump released while airborne/descending so holding Jump produces a fresh rising edge on landing for auto-bhop, and suppress native Crouch while sliding (or above `slide_min_speed`) so slides don't freeze in a stationary crouch state.
+- **Edge tracking across safety guards:** Keep updating `prev_*_held` button state even while safety guards skip `qm_step()`. Otherwise holding Jump or Crouch through a melee attack, cutscene, or swim fires a phantom `*_pressed` edge on the first frame after exiting the guard.
+- **Wall-hit / velocity resync debounce:** Require 2+ consecutive blocked ticks before resyncing solver velocity back to engine velocity so single-tick native state transitions or step-ups don't kill slides or bunnyhops.
+- **Optional speed scaling:** When porting to games whose level scale differs significantly from Quake, expose a global `speed_scale` multiplier (default `1.0`) in the adapter's tuning UI/config rather than mutating preset defaults in `qm_physics.c`.
+
+---
+
+## 7. Phased Implementation & Verification Plan
 
 1. **Discover & document hooks first:** Confirm **[GAME]**'s coordinate system (Y-up vs Z-up, handedness), unit scale (`UNITS_PER_METER`), and the 6 bindings above before writing code.
 2. **Build & test `qm_physics` standalone:** Compile `core/qm_physics.c` and run `core/test_qm_physics.c` (or translated tests) before touching game memory.
@@ -115,7 +127,7 @@ Never overwrite player velocity outside normal on-foot locomotion. Immediately s
 
 ---
 
-## 7. Existing Reference Ports
+## 8. Existing Reference Ports
 
 - **`fireball-mods` (`mods/quake_movement/native/`):** Original C11 implementation in a right-handed Z-up meters engine with native HUD overlay, config persistence, and wall-bounce support.
-- **`rac1-mods` (`mods/quake_movement/`):** Second-engine port demonstrating coordinate/unit adaptation, controller analog stick wishdir feeding, and platformer-specific safety guards (grind rails, swingshots, hoverboots, swimming, wrench attacks).
+- **`rac1-mods` (`mods/quake-movement/`):** Second-engine port demonstrating coordinate/unit adaptation, controller analog stick wishdir feeding, and platformer-specific safety guards (grind rails, swingshots, hoverboots, swimming, wrench attacks).

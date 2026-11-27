@@ -96,6 +96,115 @@ static void test_cpma_air_control_turning(void) {
     CHECK(spd > 11.5f, "CPMA air control preserves horizontal momentum");
 }
 
+static void test_cpma_analog_bleed_and_diagonal(void) {
+    qm_params_t params;
+    qm_preset_defaults(QM_PRESET_QUAKE_CPMA, &params);
+
+    qm_params_t no_ac_params = params;
+    no_ac_params.air_control = 0.0f;
+
+    const float dt = 1.0f / 120.0f;
+
+    /* 1. CPM_AirControl activates with realistic analog-stick bleed (wf=0.95, wr=0.15) */
+    qm_state_t st_bleed, st_bleed_no_ac;
+    qm_state_init(&st_bleed, &params);
+    qm_state_init(&st_bleed_no_ac, &no_ac_params);
+    st_bleed.vel[1] = 12.0f;
+    st_bleed.vel[2] = 4.0f;
+    st_bleed.pos[2] = 2.0f;
+    st_bleed_no_ac = st_bleed;
+
+    float yaw = 0.0f;
+    for (int i = 0; i < 60; ++i) {
+        qm_input_t in;
+        memset(&in, 0, sizeof(in));
+        in.dt_sec = dt;
+        in.wish_forward = 0.95f;
+        in.wish_right = 0.15f;
+        in.on_ground = 0;
+        yaw -= 0.9f * dt;
+        in.cam_yaw_rad = yaw;
+        qm_step(&params, &in, &st_bleed, &st_bleed);
+        qm_step(&no_ac_params, &in, &st_bleed_no_ac, &st_bleed_no_ac);
+    }
+    CHECK(st_bleed.vel[0] > st_bleed_no_ac.vel[0] + 2.0f,
+          "CPMA air control activates with analog-stick cross-axis bleed");
+    CHECK(qm_horiz_speed(st_bleed.vel) > 11.5f,
+          "CPMA analog-bleed air control preserves horizontal momentum");
+
+    /* 2. CPM_AirControl does NOT falsely activate on a true diagonal (wf=0.7, wr=0.7) */
+    qm_state_t st_diag, st_diag_no_ac;
+    qm_state_init(&st_diag, &params);
+    qm_state_init(&st_diag_no_ac, &no_ac_params);
+    st_diag.vel[1] = 12.0f;
+    st_diag.vel[2] = 4.0f;
+    st_diag.pos[2] = 2.0f;
+    st_diag_no_ac = st_diag;
+
+    yaw = 0.0f;
+    for (int i = 0; i < 60; ++i) {
+        qm_input_t in;
+        memset(&in, 0, sizeof(in));
+        in.dt_sec = dt;
+        in.wish_forward = 0.7f;
+        in.wish_right = 0.7f;
+        in.on_ground = 0;
+        yaw -= 0.9f * dt;
+        in.cam_yaw_rad = yaw;
+        qm_step(&params, &in, &st_diag, &st_diag);
+        qm_step(&no_ac_params, &in, &st_diag_no_ac, &st_diag_no_ac);
+    }
+    CHECK(fabsf(st_diag.vel[0] - st_diag_no_ac.vel[0]) < 1e-5f &&
+          fabsf(st_diag.vel[1] - st_diag_no_ac.vel[1]) < 1e-5f,
+          "CPMA air control does not activate on true diagonal input");
+
+    /* 3. CPMA pure-strafe accel activates with analog-stick bleed (wr=0.95, wf=0.15)
+     *    and does NOT activate on a true diagonal (wr=0.7, wf=0.7) */
+    qm_params_t no_cpm_strafe = params;
+    no_cpm_strafe.cpm_strafe_accel = 0.0f;
+
+    qm_state_t st_strafe, st_strafe_no_cpm;
+    qm_state_init(&st_strafe, &params);
+    qm_state_init(&st_strafe_no_cpm, &no_cpm_strafe);
+    st_strafe.vel[1] = 4.0f;
+    st_strafe.vel[2] = 4.0f;
+    st_strafe.pos[2] = 2.0f;
+    st_strafe_no_cpm = st_strafe;
+
+    qm_input_t strafe_in;
+    memset(&strafe_in, 0, sizeof(strafe_in));
+    strafe_in.dt_sec = dt;
+    strafe_in.wish_right = 0.95f;
+    strafe_in.wish_forward = 0.15f;
+    strafe_in.on_ground = 0;
+    qm_step(&params, &strafe_in, &st_strafe, &st_strafe);
+    qm_step(&no_cpm_strafe, &strafe_in, &st_strafe_no_cpm, &st_strafe_no_cpm);
+
+    CHECK(st_strafe.vel[0] > st_strafe_no_cpm.vel[0] + 0.25f,
+          "CPMA pure-strafe accel activates with analog-stick cross-axis bleed");
+
+    qm_state_t st_sdiag, st_sdiag_no_cpm;
+    qm_state_init(&st_sdiag, &params);
+    qm_state_init(&st_sdiag_no_cpm, &no_cpm_strafe);
+    st_sdiag.vel[1] = 0.0f;
+    st_sdiag.vel[2] = 4.0f;
+    st_sdiag.pos[2] = 2.0f;
+    st_sdiag_no_cpm = st_sdiag;
+
+    qm_input_t sdiag_in;
+    memset(&sdiag_in, 0, sizeof(sdiag_in));
+    sdiag_in.dt_sec = dt;
+    sdiag_in.wish_right = 0.7f;
+    sdiag_in.wish_forward = 0.7f;
+    sdiag_in.on_ground = 0;
+    qm_step(&params, &sdiag_in, &st_sdiag, &st_sdiag);
+    qm_step(&no_cpm_strafe, &sdiag_in, &st_sdiag_no_cpm, &st_sdiag_no_cpm);
+
+    CHECK(fabsf(st_sdiag.vel[0] - st_sdiag_no_cpm.vel[0]) < 1e-5f &&
+          fabsf(st_sdiag.vel[1] - st_sdiag_no_cpm.vel[1]) < 1e-5f,
+          "CPMA pure-strafe accel does not activate on true diagonal input");
+}
+
 static void test_half_life_low_cap_bhop(void) {
     qm_params_t params;
     qm_state_t st;
@@ -308,6 +417,7 @@ static void test_dt_and_nan_safety(void) {
 int main(void) {
     test_vq3_strafe_jump_speed_gain();
     test_cpma_air_control_turning();
+    test_cpma_analog_bleed_and_diagonal();
     test_half_life_low_cap_bhop();
     test_apex_slide_slope_and_tap_strafe();
     test_deadlock_dash_and_dash_jump();
@@ -317,6 +427,6 @@ int main(void) {
         fprintf(stderr, "qm_physics tests: %d failure(s)\n", g_failures);
         return 1;
     }
-    printf("qm_physics tests: ALL PASSED (6 suites)\n");
+    printf("qm_physics tests: ALL PASSED (7 suites)\n");
     return 0;
 }
