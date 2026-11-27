@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+sandbox/build/
 out/
 *.exe
 *.obj
@@ -10,6 +11,9 @@ out/
 *.dll
 *.so
 *.dylib
+*.a
+*.def
+sandbox/telemetry_*.csv
 
 # Temporary & editor files
 .vs/
@@ -18,3 +22,4 @@ out/
 *.tmp
 .DS_Store
 Thumbs.db
+imgui.ini
