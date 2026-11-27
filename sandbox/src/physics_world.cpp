@@ -301,6 +301,32 @@ CharacterMoveResult PhysicsWorld::step_character(Vec3 desired_vel_zup, float dt_
         shape_filter,
         *impl_->temp_alloc);
 
+    // Jolt CharacterVirtual::MoveShape does not mutate mLinearVelocity on wall/ceiling contacts.
+    // Explicitly clip velocity against collided walls and ceilings (2 passes for corners) so
+    // running into walls kills phantom speedometer speed and jumping into low ceilings never glues.
+    Vec3 clipped_vel = desired_vel_zup;
+    const auto& contacts = impl_->character->GetActiveContacts();
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const auto& c : contacts) {
+            if (!c.mHadCollision) continue;
+            const Vec3 n = normalize(from_jph(c.mContactNormal));
+            const bool is_wall    = std::fabs(n.z) < 0.65f;
+            const bool is_ceiling = n.z < -0.5f;
+            if (is_wall || is_ceiling) {
+                const float vn = dot(clipped_vel, n);
+                if (vn < 0.0f) {
+                    clipped_vel = clipped_vel - n * vn;
+                }
+            }
+        }
+    }
+
+    const auto gs = impl_->character->GetGroundState();
+    if (gs == JPH::CharacterVirtual::EGroundState::OnGround && !jumping_up && clipped_vel.z < 0.0f) {
+        clipped_vel.z = 0.0f;
+    }
+    impl_->character->SetLinearVelocity(to_jph(clipped_vel));
+
     return query_character_state();
 }
 

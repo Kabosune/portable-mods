@@ -160,10 +160,10 @@ GymMap GymMap::build() {
     // Note: 30 deg ramp is at index 2 -> rx = -24 - 13 = -37.0f, Y in [8, 19].
     gym.ramp30_sample_xy = {-37.0f, 13.5f, 0.0f};
 
-    // Access ramp beside the 20-deg deck so the player can effortlessly climb to all surf decks
-    m.add_ramp({-17.0f, ramp_y0 + ramp_run + 5.0f, 0.0f}, 3.5f, 10.0f, 4.0f, {0.55f, 0.60f, 0.66f}, 1.0f);
-    // Connecting walkway at top behind all 4 ramps
-    m.add_box({-34.0f, ramp_y0 + ramp_run + 5.8f, 4.0f}, {16.5f, 1.2f, 0.25f}, {0.52f, 0.56f, 0.62f}, 1.0f);
+    // Access ramp beside the 20-deg ramp: rises from flat floor (Y=13.6) up to the connecting walkway (Y=23.6, Z=4.0m)
+    m.add_ramp({-17.0f, ramp_y0 + 5.6f, 0.0f}, 3.5f, 10.0f, 4.0f, {0.55f, 0.60f, 0.66f}, 1.0f);
+    // Connecting walkway at top behind all 4 ramps + access ramp landing (Y=23.6..26.0, Z=4.0m)
+    m.add_box({-32.875f, ramp_y0 + ramp_run + 5.8f, 3.875f}, {17.625f, 1.2f, 0.125f}, {0.52f, 0.56f, 0.62f}, 1.0f);
 
     // 2c. Parallel Wall-Bounce Corridor (X = -50 +/- 3.0m, Y = -4 .. +22, height 5.5m)
     const Vec3 wb_wall_col{0.28f, 0.52f, 0.82f};

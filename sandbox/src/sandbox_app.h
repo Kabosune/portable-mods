@@ -49,11 +49,12 @@ struct SandboxApp {
     bool                hit_marker_was_target = false;
     std::string         last_hit_text;
 
-    // Fixed-timestep physics clock
-    int    physics_tick_hz  = 120;
-    float  sim_accumulator  = 0.0f;
-    double sim_time_sec     = 0.0;
-    float  fps_smoothed     = 60.0f;
+    // Fixed-timestep physics clock & edge-input latch (prevents dropped presses when FPS > tick Hz)
+    int            physics_tick_hz  = 120;
+    float          sim_accumulator  = 0.0f;
+    double         sim_time_sec     = 0.0;
+    float          fps_smoothed     = 60.0f;
+    InputEdgeLatch edge_latch{};
 
     // 1. quake-movement state
     qm_preset_id_t qm_preset   = QM_PRESET_QUAKE_VQ3;

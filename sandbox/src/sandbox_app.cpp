@@ -88,6 +88,10 @@ void SandboxApp::reset_player() {
 void SandboxApp::toggle_fpv_mode() {
     if (!fpv.is_ready()) return;
     fpv_mode = !fpv_mode;
+    edge_latch.clear();
+    if (!fpv_mode) {
+        fpv.release_all_keys();
+    }
     fpv.set_pilot_position(player_char.feet_pos);
     fpv.set_active_mode(fpv_mode, fpv_cam_view);
     if (fpv_mode) {
@@ -230,7 +234,8 @@ void SandboxApp::step_fps_physics(const InputFrame& in, float dt_sec) {
     qin.cam_yaw_rad     = cam_yaw_rad;
     qin.jump_held       = in.jump_held ? 1 : 0;
     qin.jump_pressed    = in.jump_pressed ? 1 : 0;
-    qin.crouch_held     = in.crouch_held ? 1 : 0;
+    // Keep crouch locomotion consistent while physically trapped under a low tunnel ceiling
+    qin.crouch_held     = (in.crouch_held || player_char.crouching) ? 1 : 0;
     qin.crouch_pressed  = in.crouch_pressed ? 1 : 0;
     qin.dash_pressed    = in.dash_pressed ? 1 : 0;
     qin.on_ground       = player_char.on_ground ? 1 : 0;
@@ -343,9 +348,6 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
 
     if (!fpv_mode) {
         const bool active_fps = mouse_captured;
-        if (active_fps && ads_toggle_mode && in.ads_held) {
-            // Handled via event edge in main.cpp; keep safe here
-        }
 
         // Aim runs once per rendered frame with exact dt for smooth 1:1 mouse/gyro/spring response
         step_fps_aim(in, dt, active_fps);
@@ -355,19 +357,24 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
             fire_hitscan();
         }
 
+        // Latch rising-edge presses so 0-substep frames (when render FPS > physics tick Hz) never drop inputs
+        if (active_fps) {
+            edge_latch.accumulate(in.jump_pressed, in.crouch_pressed, in.dash_pressed);
+        } else {
+            edge_latch.clear();
+        }
+
         // Fixed-timestep movement physics (60 / 120 / 240 Hz)
         const float fixed_dt = 1.0f / static_cast<float>(std::clamp(physics_tick_hz, 60, 240));
         sim_accumulator = std::min(sim_accumulator + dt, fixed_dt * 8.0f);
-        bool first_substep = true;
         while (sim_accumulator >= fixed_dt) {
             InputFrame sub_in = in;
-            if (!first_substep) {
-                // Only deliver rising-edge presses on the first substep
-                sub_in.jump_pressed   = false;
-                sub_in.crouch_pressed = false;
-                sub_in.dash_pressed   = false;
-            }
-            if (!active_fps) {
+            if (active_fps) {
+                sub_in.jump_pressed   = edge_latch.jump_pressed;
+                sub_in.crouch_pressed = edge_latch.crouch_pressed;
+                sub_in.dash_pressed   = edge_latch.dash_pressed;
+                edge_latch.clear();
+            } else {
                 sub_in.move_forward = sub_in.move_right = 0.0f;
                 sub_in.jump_held = sub_in.jump_pressed = false;
                 sub_in.crouch_held = sub_in.crouch_pressed = false;
@@ -375,12 +382,13 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
             }
             step_fps_physics(sub_in, fixed_dt);
             sim_accumulator -= fixed_dt;
-            first_substep = false;
         }
     } else {
-        // FPV Drone mode: apply gamepad/UI channels if active
-        fpv.apply_host_controls(in, !ui_open && !fpv.overlay_wants_input());
+        edge_latch.clear();
     }
+
+    // Update FPV host channel / keyboard arm pulse every frame
+    fpv.apply_host_controls(in, fpv_mode && !ui_open && !fpv.overlay_wants_input(), input.has_gamepad());
 
     // Tick libfpv every frame so drone state/audio/preview stay live even when standing beside it in FPS mode
     fpv.set_active_mode(fpv_mode, fpv_cam_view);

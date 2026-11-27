@@ -1,5 +1,6 @@
 #pragma once
 
+#include "control_helpers.h"
 #include "gym_map.h"
 #include "input_manager.h"
 #include "math_types.h"
@@ -7,6 +8,7 @@
 #include "libfpv.h"
 
 #include <SDL3/SDL.h>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,9 +35,13 @@ public:
     void set_pilot_position(Vec3 feet_pos);
     void set_active_mode(bool fpv_active, FpvCamView view);
 
-    // Input forwarding into libfpv (keyboard scancodes + overlay pointer + host channels)
-    void handle_sdl_event(const SDL_Event& e, bool fpv_active);
-    void apply_host_controls(const InputFrame& in, bool fpv_active);
+    // Input forwarding into libfpv (always releases held keys on KEY_UP to prevent stuck keys)
+    void handle_sdl_event(const SDL_Event& e, bool fpv_active, bool allow_new_presses);
+    void release_all_keys();
+    void apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad);
+
+    // Toggle arm cleanly in either gamepad RC mode or libfpv keyboard mode (synthetic Enter pulse)
+    void trigger_arm_toggle(bool has_gamepad);
 
     // Per-frame tick & presentation
     void tick(float dt_sec);
@@ -50,7 +56,7 @@ public:
     void set_audio_volume(float vol);
     void set_beep_volume(float vol);
     void set_muted(bool muted);
-    void apply_rates_scale(float rate_scale);
+    void apply_rates_scale(float rate_scale, bool save_to_eeprom = false);
     void select_preset(int index);
 
     const fpv_frame&          frame() const { return frame_; }
@@ -60,35 +66,36 @@ public:
     Mat4                      active_view_matrix(FpvCamView view, Vec3& out_eye, float& out_fovy, float& out_near) const;
 
     // Public UI-adjustable settings
-    bool       ui_armed         = false;
-    bool       ui_angle_mode    = true;
-    bool       show_osd         = true;
-    int        osd_style        = FPV_OSD_STYLE_ANALOG;
-    float      camera_tilt_deg  = 15.0f;
-    float      rates_scale      = 1.0f;
-    float      audio_volume     = 0.65f;
-    float      beep_volume      = 0.50f;
-    bool       audio_muted      = false;
-    bool       use_gamepad_rc   = true;
-    std::string last_cli_status;
+    FpvGamepadRcMapper gp_rc{};
+    bool               ui_angle_mode          = true;
+    bool               show_osd               = true;
+    float              camera_tilt_offset_deg = 0.0f; // Extra tilt offset (-25..+35 deg) on top of preset uptilt
+    float              rates_scale            = 1.0f;
+    float              audio_volume           = 0.65f;
+    float              beep_volume            = 0.50f;
+    bool               audio_muted            = false;
+    bool               use_gamepad_rc         = true;
+    std::string        last_cli_status;
 
 private:
     static void SDLCALL sdl_audio_callback(void* userdata, SDL_AudioStream* stream, int additional, int total);
     static int  sdl_scancode_to_fpv_key(SDL_Scancode sc);
 
-    bool             initialized_       = false;
-    bool             gl_ready_          = false;
-    bool             video_ready_       = false;
-    fpv_drone*       drone_             = nullptr;
+    bool             initialized_             = false;
+    bool             gl_ready_                = false;
+    bool             video_ready_             = false;
+    bool             host_channels_active_    = false;
+    bool             pending_kb_enter_release_ = false;
+    fpv_drone*       drone_                   = nullptr;
     fpv_frame        frame_{};
     Vec3             spawn_pos_{38.0f, -6.0f, 0.14f};
-    double           prop_angles_[4]    = {0, 0, 0, 0};
-    SDL_AudioStream* audio_stream_      = nullptr;
+    double           prop_angles_[4]          = {0, 0, 0, 0};
+    SDL_AudioStream* audio_stream_            = nullptr;
+    std::set<int>    held_fpv_keys_;
 
     std::vector<std::string> preset_names_;
     int                      current_preset_idx_ = 0;
 
-    // Opaque storage for fpv_gl3 / fpv_video_gl3 (allocated in .cpp)
     struct GlState;
     GlState* gl_ = nullptr;
 };

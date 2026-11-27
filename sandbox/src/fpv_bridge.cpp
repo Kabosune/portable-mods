@@ -119,7 +119,6 @@ bool FpvBridge::init(const MeshData& gym_mesh, Vec3 spawn_pos, const std::string
         std::fprintf(stderr, "[fpv] fpv_static_surfaces_load failed: %s\n", fpv_last_error());
     }
 
-    // Enumerate shipped drone presets
     preset_names_.clear();
     const uint32_t pcount = fpv_preset_count();
     for (uint32_t i = 0; i < pcount; ++i) {
@@ -144,7 +143,6 @@ bool FpvBridge::init(const MeshData& gym_mesh, Vec3 spawn_pos, const std::string
     const float home[3] = {spawn_pos_.x, spawn_pos_.y, spawn_pos_.z};
     fpv_gps_set_home(home);
 
-    // Optional SDL3 audio stream (gracefully continues if no playback device exists)
     fpv_audio_configure(48000, 2);
     fpv_audio_set_volume(audio_muted ? 0.0f : audio_volume);
     fpv_audio_set_beep_volume(audio_muted ? 0.0f : beep_volume);
@@ -177,6 +175,7 @@ void FpvBridge::init_gl_renderers() {
 }
 
 void FpvBridge::shutdown() {
+    release_all_keys();
     if (audio_stream_) {
         SDL_DestroyAudioStream(audio_stream_);
         audio_stream_ = nullptr;
@@ -206,7 +205,7 @@ void FpvBridge::reset_drone() {
     const float pos[3] = {spawn_pos_.x, spawn_pos_.y, spawn_pos_.z};
     const float rot[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     fpv_drone_reset(drone_, pos, rot);
-    ui_armed = false;
+    gp_rc.reset_switches();
 }
 
 void FpvBridge::set_pilot_position(Vec3 feet_pos) {
@@ -226,17 +225,44 @@ void FpvBridge::set_active_mode(bool fpv_active, FpvCamView view) {
     }
 }
 
-void FpvBridge::handle_sdl_event(const SDL_Event& e, bool fpv_active) {
+void FpvBridge::release_all_keys() {
+    if (!initialized_) {
+        held_fpv_keys_.clear();
+        pending_kb_enter_release_ = false;
+        return;
+    }
+    for (int k : held_fpv_keys_) {
+        fpv_input_key(k, 0);
+    }
+    held_fpv_keys_.clear();
+    if (pending_kb_enter_release_) {
+        fpv_input_key(FPV_KEY_ENTER, 0);
+        pending_kb_enter_release_ = false;
+    }
+}
+
+void FpvBridge::handle_sdl_event(const SDL_Event& e, bool fpv_active, bool allow_new_presses) {
     if (!initialized_) return;
+
+    // Always forward KEY_UP releases regardless of UI/mode state so libfpv never keeps a key stuck held.
+    if (e.type == SDL_EVENT_KEY_UP) {
+        const int k = sdl_scancode_to_fpv_key(e.key.scancode);
+        if (k != FPV_KEY_NONE) {
+            fpv_input_key(k, 0);
+            held_fpv_keys_.erase(k);
+        }
+        return;
+    }
+
     const bool ov_open = fpv_overlay_is_open() != 0;
-    if (!fpv_active && !ov_open) return;
+    if (!allow_new_presses || (!fpv_active && !ov_open)) return;
 
     switch (e.type) {
-    case SDL_EVENT_KEY_DOWN:
-    case SDL_EVENT_KEY_UP: {
+    case SDL_EVENT_KEY_DOWN: {
         const int k = sdl_scancode_to_fpv_key(e.key.scancode);
         if (k != FPV_KEY_NONE && !e.key.repeat) {
-            fpv_input_key(k, e.type == SDL_EVENT_KEY_DOWN ? 1 : 0);
+            fpv_input_key(k, 1);
+            held_fpv_keys_.insert(k);
         }
         break;
     }
@@ -262,53 +288,53 @@ void FpvBridge::handle_sdl_event(const SDL_Event& e, bool fpv_active) {
     }
 }
 
-void FpvBridge::apply_host_controls(const InputFrame& in, bool fpv_active) {
-    if (!initialized_ || !fpv_active) {
-        return;
+void FpvBridge::trigger_arm_toggle(bool has_gamepad) {
+    if (!initialized_) return;
+    if (use_gamepad_rc && has_gamepad) {
+        gp_rc.armed = !gp_rc.armed;
+    } else {
+        // Use libfpv's built-in keyboard arm toggle (Enter sets m_kbThrottle = 0 / -1.0 idle cleanly)
+        if (host_channels_active_) {
+            fpv_input_clear_channels();
+            host_channels_active_ = false;
+        }
+        fpv_input_key(FPV_KEY_ENTER, 1);
+        pending_kb_enter_release_ = true;
+    }
+}
+
+void FpvBridge::apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad) {
+    if (!initialized_) return;
+
+    // Complete synthetic Enter pulse on the following frame so libfpv sees a clean rising edge
+    if (pending_kb_enter_release_) {
+        fpv_input_key(FPV_KEY_ENTER, 0);
+        pending_kb_enter_release_ = false;
     }
 
-    // Inject host channels when user armed via UI or when flying with a gamepad.
-    // Otherwise let libfpv's built-in keyboard fallback (fed by fpv_input_key) drive flight.
-    const bool gamepad_active = use_gamepad_rc && (
-        std::fabs(in.left_stick_x) > 0.08f ||
-        std::fabs(in.left_stick_y) > 0.08f ||
-        std::fabs(in.look_stick_x) > 0.08f ||
-        std::fabs(in.look_stick_y) > 0.08f ||
-        in.gp_south || in.gp_east || in.gp_north);
+    if (fpv_active && use_gamepad_rc && has_gamepad) {
+        // Continuously inject Mode-2 gamepad channels whenever gamepad RC is enabled and connected.
+        // Never clear channels when sticks return to center; center throttle maps to -1.0 idle.
+        FpvGamepadInput gp{};
+        gp.left_x     = in.left_stick_x;
+        gp.left_y     = in.left_stick_y;
+        gp.right_x    = in.look_stick_x;
+        gp.right_y    = in.look_stick_y;
+        gp.btn_arm    = in.gp_south;
+        gp.btn_beeper = in.gp_east;
+        gp.btn_turtle = in.gp_north;
 
-    if (ui_armed || gamepad_active) {
         float ch[FPV_CHANNEL_COUNT] = {};
-        // Mode 2 mapping: Aileron (roll) = Right X, Elevator (pitch) = Right Y,
-        // Throttle = Left Y, Rudder (yaw) = Left X
-        const float* keys = nullptr;
-        (void)keys;
-        const bool* kb = SDL_GetKeyboardState(nullptr);
-        float roll  = std::clamp(in.look_stick_x, -1.0f, 1.0f);
-        float pitch = std::clamp(in.look_stick_y, -1.0f, 1.0f);
-        float thr   = std::clamp(in.left_stick_y, -1.0f, 1.0f);
-        float yaw   = std::clamp(in.left_stick_x, -1.0f, 1.0f);
-
-        if (!gamepad_active && kb) {
-            // Simple keyboard flight assist while UI-armed: W/S throttle, A/D yaw, Arrow keys pitch/roll
-            thr   = kb[SDL_SCANCODE_W] ? 0.25f : (kb[SDL_SCANCODE_S] ? -0.95f : -0.30f);
-            yaw   = (kb[SDL_SCANCODE_D] ? 0.6f : 0.0f) - (kb[SDL_SCANCODE_A] ? 0.6f : 0.0f);
-            pitch = (kb[SDL_SCANCODE_UP] ? 0.5f : 0.0f) - (kb[SDL_SCANCODE_DOWN] ? 0.5f : 0.0f);
-            roll  = (kb[SDL_SCANCODE_RIGHT] ? 0.5f : 0.0f) - (kb[SDL_SCANCODE_LEFT] ? 0.5f : 0.0f);
-        }
-
-        ch[0] = roll;
-        ch[1] = pitch;
-        ch[2] = thr;
-        ch[3] = yaw;
-        ch[4] = (ui_armed || in.gp_south) ? 1.0f : -1.0f; // AUX1: ARM
-        ch[5] = ui_angle_mode ? 1.0f : -1.0f;             // AUX2: ANGLE mode
-        ch[6] = in.gp_east ? 1.0f : -1.0f;                // AUX3: BEEPER
-        ch[7] = in.gp_north ? 1.0f : -1.0f;               // AUX4: TURTLE
-        ch[8] = 1.0f;                                     // AUX5: AIR MODE
-        ch[9] = show_osd ? -1.0f : 1.0f;                  // AUX6: OSD DISABLE
+        gp_rc.map_channels(gp, ui_angle_mode, show_osd, ch);
         fpv_input_set_channels(ch, FPV_CHANNEL_COUNT);
+        host_channels_active_ = true;
     } else {
-        fpv_input_clear_channels();
+        // Keyboard mode (or FPS mode): let libfpv's built-in auto-hover keyboard controller own flight
+        // cleanly (Enter arm, W/S auto-hover throttle, A/D yaw, Arrow keys pitch/roll, T turtle, B beeper).
+        if (host_channels_active_) {
+            fpv_input_clear_channels();
+            host_channels_active_ = false;
+        }
     }
 }
 
@@ -333,7 +359,7 @@ void FpvBridge::render_fpv_video_and_osd(
     } else if (view == FpvCamView::Fpv && gl_ready_ && osd_allowed) {
         fpv_gl3_render(&gl_->ui,
                        fpv_osd_draw_data(&frame_, static_cast<float>(win_w), static_cast<float>(win_h),
-                                         static_cast<fpv_osd_style>(osd_style)),
+                                         FPV_OSD_STYLE_ANALOG),
                        fb_w, fb_h);
     }
 }
@@ -353,7 +379,9 @@ bool FpvBridge::overlay_wants_input() const {
 }
 
 void FpvBridge::set_overlay_open(bool open) {
-    if (initialized_) fpv_overlay_set_open(open ? 1 : 0);
+    if (!initialized_) return;
+    if (open) release_all_keys();
+    fpv_overlay_set_open(open ? 1 : 0);
 }
 
 void FpvBridge::set_audio_volume(float vol) {
@@ -374,18 +402,46 @@ void FpvBridge::set_muted(bool muted) {
     }
 }
 
-void FpvBridge::apply_rates_scale(float scale) {
+void FpvBridge::apply_rates_scale(float scale, bool save_to_eeprom) {
     rates_scale = std::clamp(scale, 0.25f, 2.0f);
     if (!initialized_) return;
-    const int rate_val = std::clamp(static_cast<int>(std::lround(70.0f * rates_scale)), 20, 140);
-    char cmd[256];
-    std::snprintf(cmd, sizeof(cmd),
-                  "set roll_rc_rate = %d\nset pitch_rc_rate = %d\nset yaw_rc_rate = %d\nsave\n",
-                  rate_val, rate_val, rate_val);
+
+    // Detect active Betaflight rates_type so ACTUAL rates (default: rc_rate=7 -> 70 deg/s, srate=67 -> 670 deg/s)
+    // are scaled accurately without 10x overscaling, and only persist to EEPROM when explicitly requested.
+    bool is_actual = true;
+    char* query_out = nullptr;
+    if (fpv_cli_exec("get rates_type\n", &query_out) == FPV_OK && query_out) {
+        if (std::strstr(query_out, "BETAFLIGHT") != nullptr) {
+            is_actual = false;
+        }
+    }
+    if (query_out) fpv_free(query_out);
+
+    char cmd[320];
+    if (is_actual) {
+        const int rc_rate = std::clamp(static_cast<int>(std::lround(7.0f  * rates_scale)), 1, 25);
+        const int srate   = std::clamp(static_cast<int>(std::lround(67.0f * rates_scale)), 20, 120);
+        std::snprintf(cmd, sizeof(cmd),
+                      "set roll_rc_rate = %d\nset pitch_rc_rate = %d\nset yaw_rc_rate = %d\n"
+                      "set roll_srate = %d\nset pitch_srate = %d\nset yaw_srate = %d\n%s",
+                      rc_rate, rc_rate, rc_rate, srate, srate, srate,
+                      save_to_eeprom ? "save\n" : "");
+    } else {
+        const int rc_rate = std::clamp(static_cast<int>(std::lround(100.0f * rates_scale)), 30, 200);
+        const int srate   = std::clamp(static_cast<int>(std::lround(70.0f  * rates_scale)), 20, 90);
+        std::snprintf(cmd, sizeof(cmd),
+                      "set roll_rc_rate = %d\nset pitch_rc_rate = %d\nset yaw_rc_rate = %d\n"
+                      "set roll_srate = %d\nset pitch_srate = %d\nset yaw_srate = %d\n%s",
+                      rc_rate, rc_rate, rc_rate, srate, srate, srate,
+                      save_to_eeprom ? "save\n" : "");
+    }
+
     char* out = nullptr;
     const fpv_result r = fpv_cli_exec(cmd, &out);
     if (r == FPV_OK) {
-        last_cli_status = "Rates applied via Betaflight CLI";
+        last_cli_status = save_to_eeprom
+            ? "Rates applied & saved to EEPROM"
+            : "Rates applied (session only)";
     } else {
         last_cli_status = std::string("CLI: ") + fpv_result_string(r);
     }
@@ -424,9 +480,9 @@ Mat4 FpvBridge::active_view_matrix(FpvCamView view, Vec3& out_eye, float& out_fo
     Vec3 u{c.up[0],      c.up[1],      c.up[2]};
     Vec3 f{c.forward[0], c.forward[1], c.forward[2]};
 
-    // Apply optional extra sandbox camera tilt in FPV view for quick testing
-    if (view == FpvCamView::Fpv && std::fabs(camera_tilt_deg) > 0.01f) {
-        const float tilt_rad = (camera_tilt_deg - 15.0f) * kDegToRad;
+    // Smooth relative camera tilt offset (0 deg = preset native uptilt, zero discontinuity)
+    if (view == FpvCamView::Fpv && std::fabs(camera_tilt_offset_deg) > 0.01f) {
+        const float tilt_rad = camera_tilt_offset_deg * kDegToRad;
         const float ct = std::cos(tilt_rad);
         const float st = std::sin(tilt_rad);
         const Vec3 nf = normalize(f * ct + u * st);

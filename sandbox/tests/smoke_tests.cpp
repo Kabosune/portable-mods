@@ -1,3 +1,4 @@
+#include "control_helpers.h"
 #include "gym_map.h"
 #include "physics_world.h"
 #include "qm_physics.h"
@@ -85,6 +86,110 @@ static void test_gym_and_jolt_physics(const sb::GymMap& gym, sb::PhysicsWorld& p
     // While inside the tunnel, requesting uncrouch must stay crouched due to overhead clearance
     ch = physics.step_character({0.0f, 0.0f, -1.0f}, 1.0f / 120.0f, false, false);
     CHECK(ch.crouching, "Jolt CharacterVirtual blocks uncrouch under low tunnel ceiling");
+
+    // Regression (P0-3): Jumping into low tunnel ceiling must clip upward velocity (no ceiling glue)
+    sb::CharacterMoveResult ceil_res{};
+    for (int i = 0; i < 20; ++i) {
+        ceil_res = physics.step_character({0.0f, 0.0f, 7.0f}, 1.0f / 120.0f, true, true);
+    }
+    CHECK(ceil_res.velocity.z < 0.25f,
+          "Jolt ceiling contact clips upward velocity (no ceiling glue)");
+
+    // Regression (P0-3): Running head-first into corridor wall must clip into-wall velocity (no phantom speed)
+    physics.teleport_player({-47.55f, 9.0f, 0.05f});
+    sb::CharacterMoveResult wall_res{};
+    for (int i = 0; i < 20; ++i) {
+        wall_res = physics.step_character({9.5f, 0.0f, 0.0f}, 1.0f / 120.0f, false, false);
+    }
+    CHECK(std::fabs(wall_res.velocity.x) < 0.25f,
+          "Jolt wall contact clips into-wall velocity (no phantom speedometer velocity)");
+
+    // Regression (P2-1): Movement Wing access ramp top connects flush to connecting walkway (Z ~= 4.0m)
+    const sb::RaycastHit access_top = physics.raycast_world({-17.0f, 23.4f, 10.0f}, {0.0f, 0.0f, -1.0f}, 15.0f);
+    const sb::RaycastHit walkway_hit = physics.raycast_world({-17.0f, 24.5f, 10.0f}, {0.0f, 0.0f, -1.0f}, 15.0f);
+    CHECK(access_top.hit && walkway_hit.hit && std::fabs(access_top.point.z - walkway_hit.point.z) < 0.25f,
+          "Movement Wing access ramp connects flush to top connecting walkway");
+}
+
+static void test_input_latch_and_fpv_gamepad_mapper() {
+    // Regression (P1-1): Latched edges survive 0-substep frames when render FPS > physics tick Hz
+    sb::InputEdgeLatch latch{};
+    const float fixed_dt = 1.0f / 60.0f;
+    const float frame_dt = 1.0f / 240.0f;
+    float accum = 0.0f;
+    int substeps_executed = 0;
+    bool delivered_jump = false, delivered_crouch = false, delivered_dash = false;
+
+    for (int frame = 0; frame < 5; ++frame) {
+        if (frame == 0) {
+            latch.accumulate(true, true, true); // Press on frame 0 (accum = 1/240 < 1/60 -> 0 substeps!)
+        } else {
+            latch.accumulate(false, false, false);
+        }
+        accum += frame_dt;
+        while (accum >= fixed_dt) {
+            substeps_executed++;
+            if (latch.jump_pressed)   delivered_jump   = true;
+            if (latch.crouch_pressed) delivered_crouch = true;
+            if (latch.dash_pressed)   delivered_dash   = true;
+            latch.clear();
+            accum -= fixed_dt;
+        }
+        if (frame < 3) {
+            CHECK(substeps_executed == 0 && latch.jump_pressed && latch.crouch_pressed && latch.dash_pressed,
+                  "InputEdgeLatch retains jump/crouch/dash across 0-substep render frames");
+        }
+    }
+    CHECK(substeps_executed == 1 && delivered_jump && delivered_crouch && delivered_dash && !latch.jump_pressed,
+          "InputEdgeLatch delivers all latched edges on next physics substep then clears cleanly");
+
+    // Regression (P0-2): Mode-2 self-centering gamepad throttle & latched arm/turtle switches
+    sb::FpvGamepadRcMapper rc{};
+    float ch[10] = {};
+    sb::FpvGamepadInput neutral{};
+    rc.map_channels(neutral, true, true, ch);
+    CHECK(ch[2] <= -0.99f && ch[4] < 0.0f && ch[7] < 0.0f,
+          "Gamepad Mode-2 self-centering center stick maps to -1.0 idle throttle and disarmed");
+
+    // Press South -> arms; release South & center sticks -> stays armed (no mid-air disarm!)
+    sb::FpvGamepadInput press_arm{};
+    press_arm.btn_arm = true;
+    press_arm.left_y  = 0.0f;
+    rc.map_channels(press_arm, true, true, ch);
+    CHECK(ch[4] > 0.5f && ch[2] <= -0.99f,
+          "Gamepad South press toggles armed ON while centered stick keeps idle throttle");
+
+    rc.map_channels(neutral, true, true, ch);
+    CHECK(ch[4] > 0.5f && ch[2] <= -0.99f,
+          "Releasing South and centering sticks keeps drone armed (latched toggle)");
+
+    // Half-up left stick gives mid throttle (~0.0), full-up gives +1.0, down stays idle -1.0
+    sb::FpvGamepadInput half_up{};
+    half_up.left_y = 0.54f;
+    rc.map_channels(half_up, true, true, ch);
+    CHECK(ch[2] > -0.15f && ch[2] < 0.20f,
+          "Self-centering gamepad half-up stick maps near mid throttle");
+
+    sb::FpvGamepadInput full_up{};
+    full_up.left_y = 1.0f;
+    rc.map_channels(full_up, true, true, ch);
+    CHECK(ch[2] > 0.99f, "Self-centering gamepad full-up stick maps to +1.0 full throttle");
+
+    // Second South press disarms
+    rc.map_channels(press_arm, true, true, ch);
+    CHECK(ch[4] < -0.5f, "Second South press disarms drone");
+
+    // Turtle latch (North)
+    sb::FpvGamepadInput press_turtle{};
+    press_turtle.btn_turtle = true;
+    rc.map_channels(press_turtle, true, true, ch);
+    rc.map_channels(neutral, true, true, ch);
+    CHECK(ch[7] > 0.5f, "Gamepad North press latches turtle mode ON across button release");
+
+    // Non-centering throttle gimbal option passes [-1, +1] directly
+    rc.non_centering_throttle = true;
+    rc.map_channels(neutral, true, true, ch);
+    CHECK(std::fabs(ch[2]) < 0.01f, "Non-centering throttle gimbal maps 0.0 stick to 0.0 mid throttle");
 }
 
 static void test_quake_movement_integration(const sb::GymMap& gym, sb::PhysicsWorld& physics) {
@@ -279,6 +384,27 @@ static void test_libfpv_integration(const sb::GymMap& gym) {
         }
         CHECK(got == 512 && audio_finite, "fpv_audio_read returns 512 finite stereo PCM frames");
 
+        // Regression (P0-1): Keyboard FPV mode with no resting throttle override arms cleanly on Enter
+        fpv_input_clear_channels();
+        fpv_input_key(FPV_KEY_ENTER, 1);
+        for (int i = 0; i < 6; ++i) {
+            fpv_step(1.0f / 60.0f);
+            fpv_drone_tick(drone, 1.0f / 60.0f, &frame);
+        }
+        fpv_input_key(FPV_KEY_ENTER, 0);
+        for (int i = 0; i < 20; ++i) {
+            fpv_step(1.0f / 60.0f);
+            fpv_drone_tick(drone, 1.0f / 60.0f, &frame);
+        }
+        CHECK(frame.channels[2] <= -0.95f && (frame.flags & FPV_DRONE_ARMED) != 0,
+              "Keyboard FPV Enter arms Betaflight cleanly with idle -1.0 throttle (no THROTTLE block)");
+
+        // Disarm cleanly after test
+        fpv_input_key(FPV_KEY_ENTER, 1);
+        fpv_step(1.0f / 60.0f);
+        fpv_input_key(FPV_KEY_ENTER, 0);
+        fpv_step(1.0f / 60.0f);
+
         fpv_drone_delete(drone);
     }
 
@@ -297,6 +423,7 @@ int main() {
         test_gym_and_jolt_physics(gym, physics);
         test_quake_movement_integration(gym, physics);
     }
+    test_input_latch_and_fpv_gamepad_mapper();
     test_weighty_aim_and_free_aim_composition();
     test_libfpv_integration(gym);
 

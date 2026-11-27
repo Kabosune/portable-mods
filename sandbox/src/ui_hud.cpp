@@ -107,9 +107,14 @@ static void draw_always_visible_hud(const SandboxApp& app, int win_w, int win_h)
                           (app.fpv.frame().flags & FPV_DRONE_ARMED) ? "ARMED" : "DISARMED",
                           app.fps_smoothed);
         }
-        const char* line2 = app.ui_open
-            ? "UI UNLOCKED  |  Tab/Esc: Resume  |  F: Toggle FPV  |  F1: HUD"
-            : "Tab/Esc: Tuning UI  |  F: FPV Drone  |  R: Reset  |  F1: HUD";
+        const char* line2 = nullptr;
+        if (app.ui_open) {
+            line2 = "UI UNLOCKED  |  Tab/Esc: Resume  |  F: Toggle FPV  |  F8: libfpv Menu  |  F1: HUD";
+        } else if (app.fpv_mode) {
+            line2 = "Enter: Arm | W/S: Hover Throttle | A/D: Yaw | Arrows: Pitch/Roll | T: Turtle | B: Beeper | V: Cam | F: FPS";
+        } else {
+            line2 = "Tab/Esc: Tuning UI  |  F: FPV Drone  |  R: Reset  |  F1: HUD";
+        }
         const float box_w = std::max(ImGui::CalcTextSize(line1).x, ImGui::CalcTextSize(line2).x) + 24.0f;
         const ImVec2 p0(14.0f, 14.0f);
         const ImVec2 p1(p0.x + box_w, 66.0f);
@@ -125,8 +130,10 @@ static void draw_always_visible_hud(const SandboxApp& app, int win_w, int win_h)
             fa_debug_info_t dbg{};
             fa_get_debug_info(&app.fa_state, &dbg);
 
-            const float zx = std::max(0.1f, dbg.active ? dbg.zone_x : app.fa_bank.cfg.zone_x);
-            const float zy = std::max(0.1f, dbg.active ? dbg.zone_y : app.fa_bank.cfg.zone_y);
+            // While Tuning Panel is open, derive zone live from fa_bank.cfg so slider drags resize immediately
+            const float live_fov_scale = fa_fov_scale(app.current_world_fovy, app.base_world_fovy_deg);
+            const float zx = std::max(0.1f, (!app.ui_open && dbg.active) ? dbg.zone_x : (app.fa_bank.cfg.zone_x * live_fov_scale));
+            const float zy = std::max(0.1f, (!app.ui_open && dbg.active) ? dbg.zone_y : (app.fa_bank.cfg.zone_y * live_fov_scale));
             constexpr int kSegs = 64;
             ImVec2 pts[kSegs];
             for (int i = 0; i < kSegs; ++i) {
@@ -563,26 +570,32 @@ void draw_sandbox_ui(SandboxApp& app, int win_w, int win_h) {
                 }
 
                 ImGui::Separator();
-                ImGui::Checkbox("Arm Drone (Host Channel AUX1)", &app.fpv.ui_armed);
+                const bool armed_now = (app.fpv.frame().flags & FPV_DRONE_ARMED) != 0;
+                if (ImGui::Button(armed_now ? "Disarm Drone (Enter / South)" : "Arm Drone (Enter / South)")) {
+                    app.fpv.trigger_arm_toggle(app.input.has_gamepad());
+                }
                 ImGui::SameLine();
-                ImGui::Checkbox("Angle Mode (Self-Level)", &app.fpv.ui_angle_mode);
-                ImGui::Checkbox("Gamepad RC Input", &app.fpv.use_gamepad_rc);
-                ImGui::SliderFloat("Camera Tilt", &app.fpv.camera_tilt_deg, -10.0f, 55.0f, "%.0f deg");
+                ImGui::Checkbox("Angle Mode (Gamepad)", &app.fpv.ui_angle_mode);
+                ImGui::Checkbox("Gamepad Mode-2 RC Input", &app.fpv.use_gamepad_rc);
+                ImGui::Checkbox("Non-Centering Throttle Gimbal", &app.fpv.gp_rc.non_centering_throttle);
+                ImGui::TextDisabled("KB Flight: Enter=Arm, W/S=Hover Throttle, A/D=Yaw, Arrows=Pitch/Roll, T=Turtle, B=Beeper");
+
+                ImGui::SliderFloat("Extra Camera Tilt", &app.fpv.camera_tilt_offset_deg, -25.0f, 35.0f, "%+.0f deg");
 
                 float rscale = app.fpv.rates_scale;
                 if (ImGui::SliderFloat("RC Rates Scale", &rscale, 0.4f, 1.8f, "%.2fx")) {
                     app.fpv.rates_scale = rscale;
                 }
+                if (ImGui::Button("Apply Rates (Session)")) app.fpv.apply_rates_scale(app.fpv.rates_scale, false);
                 ImGui::SameLine();
-                if (ImGui::Button("Apply CLI")) app.fpv.apply_rates_scale(app.fpv.rates_scale);
+                if (ImGui::Button("Save to EEPROM")) app.fpv.apply_rates_scale(app.fpv.rates_scale, true);
                 if (!app.fpv.last_cli_status.empty()) {
                     ImGui::TextDisabled("%s", app.fpv.last_cli_status.c_str());
                 }
 
                 ImGui::Separator();
                 ImGui::Checkbox("Show Betaflight OSD", &app.fpv.show_osd);
-                const char* styles[] = {"Analog (MAX7456)", "HD"};
-                ImGui::Combo("OSD Style", &app.fpv.osd_style, styles, 2);
+                ImGui::TextDisabled("OSD style, lens & video feed settings: press F8 > OSD / Camera");
 
                 float vol = app.fpv.audio_volume;
                 if (ImGui::SliderFloat("Motor Audio Volume", &vol, 0.0f, 1.5f, "%.2f")) app.fpv.set_audio_volume(vol);
@@ -592,7 +605,9 @@ void draw_sandbox_ui(SandboxApp& app, int win_w, int win_h) {
                 if (ImGui::Checkbox("Mute Drone Audio", &muted)) app.fpv.set_muted(muted);
 
                 if (ImGui::Button("Open libfpv Settings Overlay (F8)")) {
-                    app.fpv.set_overlay_open(!app.fpv.overlay_is_open());
+                    const bool open_now = !app.fpv.overlay_is_open();
+                    app.fpv.set_overlay_open(open_now);
+                    if (open_now) app.ui_open = false;
                 }
 
                 ImGui::Separator();

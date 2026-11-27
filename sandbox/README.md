@@ -52,18 +52,23 @@ Capture headless/automated visual verification screenshots:
 
 | Key / Input | FPS Mode | FPV Drone Mode |
 | :--- | :--- | :--- |
-| `W / A / S / D` | Move (camera-relative) | Throttle / Yaw (forwarded to `libfpv`) |
+| `W / S` | Move Forward / Back | Auto-Hover Throttle Up / Cut (`libfpv` keyboard flight) |
+| `A / D` | Strafe Left / Right | Yaw Left / Right |
+| `Arrow Keys` | — | Pitch Up/Down, Roll Left/Right |
+| `Enter` / `Gamepad South` | — | Toggle Arm / Disarm (`libfpv` / Mode-2 gamepad) |
+| `T` / `Gamepad North` | — | Toggle Turtle Mode (crash flip) |
+| `B` / `Gamepad East` | — | Beeper (hold) |
 | `Mouse` | Look (`free-aim` + camera) | Pointer (when overlay/UI unlocked) |
-| `Space` / `Gamepad South` | Jump / Auto-Bhop / Wall-Bounce | Forwarded to `libfpv` |
-| `Ctrl` / `C` / `Gamepad East` | Crouch / Crouch-Slide | Forwarded to `libfpv` |
-| `Left Shift` / `LB` | Dash (Deadlock / Custom) | Forwarded to `libfpv` |
+| `Space` / `Gamepad South` | Jump / Auto-Bhop / Wall-Bounce | — |
+| `Ctrl` / `C` / `Gamepad East` | Crouch / Crouch-Slide | — |
+| `Left Shift` / `LB` | Dash (Deadlock / Custom) | — |
 | `LMB` / `R2` | Fire hitscan shot | — |
 | `RMB` / `L2` | Aim Down Sights (ADS) | — |
 | `F` | Toggle FPS ↔ FPV Drone mode | Toggle FPS ↔ FPV Drone mode |
 | `V` | — | Cycle FPV / Chase / LOS camera |
 | `R` | Reset player to active teleport | Repair & reset drone to launch pad |
 | `Tab` / `Esc` | Unlock mouse & open Tuning Panel | Unlock mouse & open Tuning Panel |
-| `F8` | Toggle `libfpv` native overlay | Toggle `libfpv` native overlay |
+| `F8` | Toggle `libfpv` native overlay (OSD, camera, rates) | Toggle `libfpv` native overlay (OSD, camera, rates) |
 | `F1` | Toggle HUD visibility | Toggle HUD visibility |
 
 ---

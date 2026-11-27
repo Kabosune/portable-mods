@@ -173,7 +173,12 @@ int main(int argc, char** argv) {
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (app.ui_open) {
+            // Always forward release & window events to Dear ImGui so keys/buttons never stick across panel toggles
+            const bool is_release_or_win =
+                e.type == SDL_EVENT_KEY_UP ||
+                e.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                (e.type >= SDL_EVENT_WINDOW_FIRST && e.type <= SDL_EVENT_WINDOW_LAST);
+            if (app.ui_open || is_release_or_win) {
                 ImGui_ImplSDL3_ProcessEvent(&e);
             }
 
@@ -185,9 +190,11 @@ int main(int argc, char** argv) {
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode key = e.key.key;
 
-                // F8 toggles libfpv's built-in overlay
+                // F8 toggles libfpv's built-in overlay; close Tuning Panel so overlay input is never trapped
                 if (key == SDLK_F8) {
-                    app.fpv.set_overlay_open(!app.fpv.overlay_is_open());
+                    const bool open_now = !app.fpv.overlay_is_open();
+                    app.fpv.set_overlay_open(open_now);
+                    if (open_now) app.ui_open = false;
                     sync_mouse_capture();
                     continue;
                 }
@@ -198,6 +205,7 @@ int main(int argc, char** argv) {
                         app.fpv.set_overlay_open(false);
                     } else {
                         app.ui_open = !app.ui_open;
+                        if (app.ui_open) app.fpv.release_all_keys();
                     }
                     sync_mouse_capture();
                     continue;
@@ -233,10 +241,8 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Forward to libfpv when in FPV mode or when libfpv's F8 overlay is open
-            if (!app.ui_open) {
-                app.fpv.handle_sdl_event(e, app.fpv_mode);
-            }
+            // Always invoke handle_sdl_event so KEY_UP releases always clear libfpv held-key state
+            app.fpv.handle_sdl_event(e, app.fpv_mode, !app.ui_open);
 
             const bool capture_now = !app.ui_open && !app.fpv.overlay_wants_input();
             app.input.process_event(e, capture_now);
