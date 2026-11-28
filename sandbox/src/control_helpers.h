@@ -155,8 +155,9 @@ struct MenuInputRouter {
         bool controller_bypasses_menu,
         bool start_held) {
         MenuRoutingResult r{};
-        // Start button rising edge always toggles the menu cleanly regardless of bypass setting
-        r.toggle_ui = start_held && !prev_start;
+        // Start button rising edge toggles the menu only when the window is focused
+        // (SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS is enabled for sensors/connect events).
+        r.toggle_ui = window_focused && start_held && !prev_start;
         prev_start = start_held;
 
         const bool effective_ui_open = r.toggle_ui ? !ui_open : ui_open;
@@ -164,6 +165,57 @@ struct MenuInputRouter {
         r.allow_gamepad = window_focused && !fpv_overlay_wants_input &&
                           (!effective_ui_open || controller_bypasses_menu);
         return r;
+    }
+};
+
+// Uniform ADS toggle policy for both RMB (KB+Mouse) and L2 (Gamepad) across normal
+// FPS gameplay and Tuning Panel controller-bypass modes.
+inline bool should_toggle_ads(
+    bool ads_toggle_mode,
+    bool fpv_mode,
+    const MenuRoutingResult& routing,
+    bool kbm_ads_pressed,
+    bool gamepad_ads_pressed) {
+    if (!ads_toggle_mode || fpv_mode) return false;
+    return (routing.allow_kbm && kbm_ads_pressed) ||
+           (routing.allow_gamepad && gamepad_ads_pressed);
+}
+
+// Holds a synthetic key-down pulse for at least hold_sec (default 25 ms) AND skips the
+// triggering frame's pre-event dt so asynchronous threads (e.g. libfpv's 1 kHz sim thread)
+// reliably poll the key-down state before key-up (0) is emitted.
+struct KeyPulseTimer {
+    static constexpr float kDefaultHoldSec = 0.025f;
+
+    bool  active        = false;
+    bool  armed_to_tick = false;
+    float remaining_sec = 0.0f;
+
+    void trigger(float hold_sec = kDefaultHoldSec) {
+        active        = true;
+        armed_to_tick = false;
+        remaining_sec = std::max(0.0f, hold_sec);
+    }
+
+    void clear() {
+        active        = false;
+        armed_to_tick = false;
+        remaining_sec = 0.0f;
+    }
+
+    // Returns true once when the pulse has been held long enough and key-up (0) should be sent.
+    bool advance(float dt_sec) {
+        if (!active) return false;
+        if (!armed_to_tick) {
+            armed_to_tick = true;
+            return false;
+        }
+        remaining_sec -= std::max(0.0f, dt_sec);
+        if (remaining_sec <= 1e-6f) {
+            clear();
+            return true;
+        }
+        return false;
     }
 };
 

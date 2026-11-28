@@ -192,6 +192,32 @@ static void test_input_latch_and_fpv_gamepad_mapper() {
     rc.non_centering_throttle = true;
     rc.map_channels(neutral, true, true, ch);
     CHECK(std::fabs(ch[2]) < 0.01f, "Non-centering throttle gimbal maps 0.0 stick to 0.0 mid throttle");
+
+    // Regression (P0-1): KeyPulseTimer holds synthetic Enter/Turtle pulse across triggering frame and >= 25 ms
+    sb::KeyPulseTimer enter_pulse{};
+    sb::KeyPulseTimer turtle_pulse{};
+    enter_pulse.trigger();
+    turtle_pulse.trigger();
+    // Same-frame advance (even with a 33 ms frame dt) must NOT drop the pulse immediately
+    const bool same_frame_enter  = enter_pulse.advance(0.033f);
+    const bool same_frame_turtle = turtle_pulse.advance(0.033f);
+    CHECK(!same_frame_enter && enter_pulse.active && !same_frame_turtle && turtle_pulse.active,
+          "KeyPulseTimer holds synthetic Enter/Turtle key down across triggering frame regardless of dt");
+
+    // Advance 24 ms total across 3 x 8 ms frames -> still held (< 25 ms)
+    bool released_early = false;
+    for (int i = 0; i < 3; ++i) {
+        released_early = released_early || enter_pulse.advance(0.008f) || turtle_pulse.advance(0.008f);
+    }
+    CHECK(!released_early && enter_pulse.active && turtle_pulse.active,
+          "KeyPulseTimer keeps synthetic Enter/Turtle key down for < 25 ms elapsed");
+
+    // Crossing 25 ms (total 26 ms) emits key-up once and clears
+    const bool rel_enter  = enter_pulse.advance(0.002f);
+    const bool rel_turtle = turtle_pulse.advance(0.002f);
+    const bool rel_again  = enter_pulse.advance(0.016f) || turtle_pulse.advance(0.016f);
+    CHECK(rel_enter && rel_turtle && !enter_pulse.active && !turtle_pulse.active && !rel_again,
+          "KeyPulseTimer releases synthetic Enter/Turtle key once after >= 25 ms and stays clear");
 }
 
 static void test_quake_movement_integration(const sb::GymMap& gym, sb::PhysicsWorld& physics) {
@@ -401,11 +427,22 @@ static void test_libfpv_integration(const sb::GymMap& gym) {
         CHECK(frame.channels[2] <= -0.95f && (frame.flags & FPV_DRONE_ARMED) != 0,
               "Keyboard FPV Enter arms Betaflight cleanly with idle -1.0 throttle (no THROTTLE block)");
 
-        // Disarm cleanly after arm test
-        fpv_input_key(FPV_KEY_ENTER, 1);
-        fpv_step(1.0f / 60.0f);
-        fpv_input_key(FPV_KEY_ENTER, 0);
-        fpv_step(1.0f / 60.0f);
+        // Disarm cleanly after arm test using KeyPulseTimer (>= 25 ms hold across frames)
+        {
+            sb::KeyPulseTimer disarm_pulse{};
+            fpv_input_key(FPV_KEY_ENTER, 1);
+            disarm_pulse.trigger();
+            const float step_dt = 1.0f / 60.0f;
+            for (int i = 0; i < 12; ++i) {
+                if (disarm_pulse.advance(step_dt)) {
+                    fpv_input_key(FPV_KEY_ENTER, 0);
+                }
+                fpv_step(step_dt);
+                fpv_drone_tick(drone, step_dt, &frame);
+            }
+            CHECK(!disarm_pulse.active && (frame.flags & FPV_DRONE_ARMED) == 0,
+                  "Keyboard FPV reset disarm pulse (>= 25 ms) reliably disarms libfpv");
+        }
 
         // Regression: FPV drone reset restores exact upright launch-pad pose, zero velocity, and disarmed state
         {
@@ -637,6 +674,50 @@ static void test_sandbox_wa_defaults_menu_bypass_and_settings() {
     CHECK(r5.toggle_ui && ui_open && !r5.allow_kbm && r5.allow_gamepad,
           "Second Start button press opens Tuning Panel while gamepad bypass keeps controller live");
 
+    // Regression (P1-3): Unfocused gamepad Start press must NOT toggle ui_open (and holding into focus must not phantom-toggle)
+    router.evaluate(false, ui_open, false, true, false);
+    const bool ui_before_unfocused = ui_open;
+    sb::MenuRoutingResult r_unfocused = router.evaluate(false, ui_open, false, true, true);
+    if (r_unfocused.toggle_ui) ui_open = !ui_open;
+    sb::MenuRoutingResult r_regain_held = router.evaluate(true, ui_open, false, true, true);
+    if (r_regain_held.toggle_ui) ui_open = !ui_open;
+    CHECK(!r_unfocused.toggle_ui && !r_regain_held.toggle_ui && ui_open == ui_before_unfocused,
+          "Unfocused gamepad Start press does not toggle ui_open and holding into focus causes no phantom toggle");
+
+    // Releasing Start and pressing again while focused DOES toggle ui_open
+    router.evaluate(true, ui_open, false, true, false);
+    sb::MenuRoutingResult r_focused_press = router.evaluate(true, ui_open, false, true, true);
+    if (r_focused_press.toggle_ui) ui_open = !ui_open;
+    CHECK(r_focused_press.toggle_ui && ui_open != ui_before_unfocused,
+          "Focused gamepad Start press toggles ui_open cleanly after unfocused press was ignored");
+
+    // Regression (P1-2): Gamepad L2 ADS toggle works during normal FPS gameplay AND during UI open with controller bypass ON
+    {
+        sb::MenuInputRouter ads_router{};
+        // Normal FPS gameplay: ui_open=false -> allow_kbm=true, allow_gamepad=true
+        const sb::MenuRoutingResult r_fps = ads_router.evaluate(true, false, false, true, false);
+        CHECK(r_fps.allow_kbm && r_fps.allow_gamepad &&
+              sb::should_toggle_ads(true, false, r_fps, false, true) &&
+              sb::should_toggle_ads(true, false, r_fps, true, false),
+              "Gamepad L2 and mouse RMB both toggle ADS during normal FPS gameplay");
+
+        // Tuning Panel open with controller bypass ON -> allow_kbm=false, allow_gamepad=true
+        const sb::MenuRoutingResult r_bypass_on = ads_router.evaluate(true, true, false, true, false);
+        CHECK(!r_bypass_on.allow_kbm && r_bypass_on.allow_gamepad &&
+              sb::should_toggle_ads(true, false, r_bypass_on, false, true) &&
+              !sb::should_toggle_ads(true, false, r_bypass_on, true, false),
+              "With ui_open=true & controller bypass ON, L2 toggles ADS while RMB does not");
+
+        // Tuning Panel open with controller bypass OFF -> both blocked
+        const sb::MenuRoutingResult r_bypass_off = ads_router.evaluate(true, true, false, false, false);
+        CHECK(!r_bypass_off.allow_kbm && !r_bypass_off.allow_gamepad &&
+              !sb::should_toggle_ads(true, false, r_bypass_off, false, true) &&
+              !sb::should_toggle_ads(true, false, r_bypass_off, true, false) &&
+              !sb::should_toggle_ads(true, true, r_fps, false, true) &&
+              !sb::should_toggle_ads(false, false, r_fps, false, true),
+              "ADS toggle is blocked when menu bypass is OFF, in FPV mode, or when ADS toggle mode is OFF");
+    }
+
     // 3. AimStats tracking & reset
     sb::AimStats stats{};
     stats.record_shot(true);
@@ -741,6 +822,17 @@ static void test_sandbox_wa_defaults_menu_bypass_and_settings() {
     CHECK(rdef.style == sb::ReticleStyle::CrosshairDot && rdef.outline &&
           rdef.thickness >= 2.0f && rdef.opacity >= 0.90f && rdef.dot_size >= 2.0f,
           "Default ReticleConfig is high-contrast outlined Crosshair+Dot");
+
+    // 6. Regression (P2-4): Extreme out-of-range integer values in INI clamp cleanly without wraparound
+    sb::SandboxSettings clamped{};
+    const bool parsed_extreme = sb::deserialize_sandbox_settings_ini(
+        "wa_curve=999999999999\nqm_preset=-999999999999\nreticle_style=4294967296\n",
+        clamped);
+    CHECK(parsed_extreme &&
+          clamped.wa_curve == WA_CURVE_COUNT - 1 &&
+          clamped.qm_preset == 0 &&
+          clamped.reticle_style == static_cast<int>(sb::ReticleStyle::Count) - 1,
+          "INI integer parsing clamps extreme out-of-range values safely without narrowing wraparound");
 }
 
 int main() {

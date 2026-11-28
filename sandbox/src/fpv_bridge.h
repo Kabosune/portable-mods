@@ -40,7 +40,7 @@ public:
     // Input forwarding into libfpv (always releases held keys on KEY_UP to prevent stuck keys)
     void handle_sdl_event(const SDL_Event& e, bool fpv_active, bool allow_new_presses);
     void release_all_keys();
-    void apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad);
+    void apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad, float dt_sec);
 
     // Toggle arm cleanly in either gamepad RC mode or libfpv keyboard mode (synthetic Enter pulse)
     void trigger_arm_toggle(bool has_gamepad);
@@ -87,8 +87,8 @@ private:
     bool             gl_ready_                = false;
     bool             video_ready_             = false;
     bool             host_channels_active_     = false;
-    bool             pending_kb_enter_release_ = false;
-    bool             pending_kb_turtle_release_ = false;
+    KeyPulseTimer    kb_enter_pulse_{};
+    KeyPulseTimer    kb_turtle_pulse_{};
     fpv_drone*       drone_                   = nullptr;
     fpv_frame        frame_{};
     Vec3             spawn_pos_{38.0f, -6.0f, 0.14f};

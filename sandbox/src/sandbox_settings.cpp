@@ -35,7 +35,7 @@ static int parse_int(const std::string& val, int fallback, int lo, int hi) {
     char* end = nullptr;
     const long v = std::strtol(val.c_str(), &end, 10);
     if (!end || end == val.c_str()) return fallback;
-    return std::clamp(static_cast<int>(v), lo, hi);
+    return static_cast<int>(std::clamp<long>(v, static_cast<long>(lo), static_cast<long>(hi)));
 }
 
 std::string serialize_sandbox_settings_ini(const SandboxSettings& s) {

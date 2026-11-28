@@ -229,14 +229,15 @@ void FpvBridge::reset_drone() {
         ch[9] = show_osd ? -1.0f : 1.0f;
         fpv_input_set_channels(ch, FPV_CHANNEL_COUNT);
     } else {
-        // In libfpv's built-in keyboard mode, disarm & clear turtle if currently latched
+        // In libfpv's built-in keyboard mode, disarm & clear turtle if currently latched.
+        // Hold synthetic pulses >= 25 ms so libfpv's 1 kHz sim thread reliably polls m_keys.
         if ((frame_.flags & FPV_DRONE_ARMED) != 0 || frame_.channels[4] > 0.0f) {
             fpv_input_key(FPV_KEY_ENTER, 1);
-            pending_kb_enter_release_ = true;
+            kb_enter_pulse_.trigger();
         }
         if ((frame_.flags & FPV_DRONE_TURTLE) != 0 || frame_.channels[7] > 0.0f) {
             fpv_input_key('T', 1);
-            pending_kb_turtle_release_ = true;
+            kb_turtle_pulse_.trigger();
         }
     }
 
@@ -275,20 +276,21 @@ void FpvBridge::set_active_mode(bool fpv_active, FpvCamView view) {
 void FpvBridge::release_all_keys() {
     if (!initialized_) {
         held_fpv_keys_.clear();
-        pending_kb_enter_release_ = false;
+        kb_enter_pulse_.clear();
+        kb_turtle_pulse_.clear();
         return;
     }
     for (int k : held_fpv_keys_) {
         fpv_input_key(k, 0);
     }
     held_fpv_keys_.clear();
-    if (pending_kb_enter_release_) {
+    if (kb_enter_pulse_.active) {
         fpv_input_key(FPV_KEY_ENTER, 0);
-        pending_kb_enter_release_ = false;
+        kb_enter_pulse_.clear();
     }
-    if (pending_kb_turtle_release_) {
+    if (kb_turtle_pulse_.active) {
         fpv_input_key('T', 0);
-        pending_kb_turtle_release_ = false;
+        kb_turtle_pulse_.clear();
     }
 }
 
@@ -301,6 +303,8 @@ void FpvBridge::handle_sdl_event(const SDL_Event& e, bool fpv_active, bool allow
         if (k != FPV_KEY_NONE) {
             fpv_input_key(k, 0);
             held_fpv_keys_.erase(k);
+            if (k == FPV_KEY_ENTER) kb_enter_pulse_.clear();
+            if (k == 'T')           kb_turtle_pulse_.clear();
         }
         return;
     }
@@ -350,21 +354,20 @@ void FpvBridge::trigger_arm_toggle(bool has_gamepad) {
             host_channels_active_ = false;
         }
         fpv_input_key(FPV_KEY_ENTER, 1);
-        pending_kb_enter_release_ = true;
+        kb_enter_pulse_.trigger();
     }
 }
 
-void FpvBridge::apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad) {
+void FpvBridge::apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad, float dt_sec) {
     if (!initialized_) return;
 
-    // Complete synthetic Enter / Turtle pulses on the following frame so libfpv sees clean edges
-    if (pending_kb_enter_release_) {
+    // Hold synthetic Enter / Turtle pulses for >= 25 ms (and past the triggering frame) so
+    // libfpv's 1 kHz sim thread reliably observes the key-down before key-up (0) is emitted.
+    if (kb_enter_pulse_.advance(dt_sec)) {
         fpv_input_key(FPV_KEY_ENTER, 0);
-        pending_kb_enter_release_ = false;
     }
-    if (pending_kb_turtle_release_) {
+    if (kb_turtle_pulse_.advance(dt_sec)) {
         fpv_input_key('T', 0);
-        pending_kb_turtle_release_ = false;
     }
 
     if (fpv_active && use_gamepad_rc && has_gamepad) {

@@ -319,7 +319,9 @@ void SandboxApp::step_fps_aim(const InputFrame& in, float dt_sec, bool active_ga
     last_look_stick_mag = raw_stick_mag;
 
     if (!active_gameplay) {
-        // Keep gyro calibration & stick curve visualizer preview alive while paused in menu
+        // Keep World Vertical FOV preview, gyro calibration & stick curve visualizer alive while paused in menu
+        const float ads_zoom = std::clamp(fa_bank.cfg.ads_zoom, 1.0f, 3.0f);
+        current_world_fovy = base_world_fovy_deg / (1.0f + (ads_zoom - 1.0f) * fa_out.ads_amount);
         wa_gyro_menu_tick(&wa_player.gyro_cfg, &wa_player.gyro_state, &in.sensor, dt_sec);
         wa_stick_state_t preview_st = wa_player.stick_state;
         wa_process_stick(&wa_player.stick_cfg, &preview_st, raw_x, raw_y, dt_sec,
@@ -565,8 +567,8 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
     InputFrame in = input.sample(routing.allow_kbm, routing.allow_gamepad);
     input.consume_mouse_delta();
 
-    // Support ADS toggle mode from controller L2 trigger rising edge as well
-    if (ads_toggle_mode && !fpv_mode && routing.allow_gamepad && !routing.allow_kbm && in.ads_pressed) {
+    // Handle ADS toggle mode uniformly for both RMB and controller L2 rising edges
+    if (should_toggle_ads(ads_toggle_mode, fpv_mode, routing, in.kbm_ads_pressed, in.gp_ads_pressed)) {
         ads_toggled_on = !ads_toggled_on;
     }
 
@@ -635,8 +637,8 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
         edge_latch.clear();
     }
 
-    // Update FPV host channel / keyboard arm pulse every frame (gamepad bypasses menu when enabled!)
-    fpv.apply_host_controls(in, fpv_mode && routing.allow_gamepad, input.has_gamepad());
+    // Update FPV host channel / keyboard arm & reset pulses every frame (gamepad bypasses menu when enabled!)
+    fpv.apply_host_controls(in, fpv_mode && routing.allow_gamepad, input.has_gamepad(), dt);
 
     // Tick libfpv every frame so drone state/audio/preview stay live even when standing beside it in FPS mode
     fpv.set_active_mode(fpv_mode, fpv_cam_view);

@@ -98,7 +98,10 @@ void InputManager::process_event(const SDL_Event& e, bool mouse_captured) {
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (mouse_captured) {
             if (e.button.button == SDL_BUTTON_LEFT)  lmb_held_ = true;
-            if (e.button.button == SDL_BUTTON_RIGHT) rmb_held_ = true;
+            if (e.button.button == SDL_BUTTON_RIGHT) {
+                if (!rmb_held_) rmb_pressed_accum_ = true;
+                rmb_held_ = true;
+            }
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -147,7 +150,15 @@ InputFrame InputManager::sample(bool allow_kbm, bool allow_gamepad) {
     bool crouch_now = allow_kbm && keys && (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]);
     bool dash_now   = allow_kbm && keys && keys[SDL_SCANCODE_LSHIFT];
     bool fire_now   = allow_kbm && lmb_held_;
-    bool ads_now    = allow_kbm && rmb_held_;
+
+    const bool raw_kbm_ads     = rmb_held_;
+    const bool kbm_ads_now     = allow_kbm && raw_kbm_ads;
+    const bool kbm_ads_pressed = allow_kbm && (rmb_pressed_accum_ || (raw_kbm_ads && !prev_kbm_ads_));
+    rmb_pressed_accum_ = false;
+
+    bool raw_gp_ads     = false;
+    bool gp_ads_now     = false;
+    bool gp_ads_pressed = false;
 
     if (gamepad_) {
         // Always refresh motion sensors & raw right stick for live UI diagnostics / gyro calibration
@@ -177,12 +188,17 @@ InputFrame InputManager::sample(bool allow_kbm, bool allow_gamepad) {
 
         out.gp_start = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_START);
 
+        const float raw_lt = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)), 0.0f, 1.0f);
+        raw_gp_ads         = (raw_lt > 0.35f);
+        gp_ads_now         = allow_gamepad && raw_gp_ads;
+        gp_ads_pressed     = allow_gamepad && raw_gp_ads && !prev_gp_ads_;
+
         if (allow_gamepad) {
             out.left_stick_x  =  normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX));
             out.left_stick_y  = -normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY));
             out.look_stick_x  = raw_rx;
             out.look_stick_y  = raw_ry;
-            out.left_trigger  = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)), 0.0f, 1.0f);
+            out.left_trigger  = raw_lt;
             out.right_trigger = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)), 0.0f, 1.0f);
 
             out.gp_south = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_SOUTH);
@@ -203,32 +219,34 @@ InputFrame InputManager::sample(bool allow_kbm, bool allow_gamepad) {
             crouch_now = crouch_now || out.gp_east || SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
             dash_now   = dash_now   || out.gp_lb || SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_STICK);
             fire_now   = fire_now   || (out.right_trigger > 0.45f);
-            ads_now    = ads_now    || (out.left_trigger > 0.35f);
         }
     }
 
-    out.move_forward   = move_fwd;
-    out.move_right     = move_rgt;
-    out.jump_held      = jump_now;
-    out.jump_pressed   = jump_now && !prev_jump_;
-    out.crouch_held    = crouch_now;
-    out.crouch_pressed = crouch_now && !prev_crouch_;
-    out.dash_pressed   = dash_now && !prev_dash_;
-    out.fire_held      = fire_now;
-    out.fire_pressed   = fire_now && !prev_fire_;
-    out.ads_held       = ads_now;
-    out.ads_pressed    = ads_now && !prev_ads_;
+    out.move_forward    = move_fwd;
+    out.move_right      = move_rgt;
+    out.jump_held       = jump_now;
+    out.jump_pressed    = jump_now && !prev_jump_;
+    out.crouch_held     = crouch_now;
+    out.crouch_pressed  = crouch_now && !prev_crouch_;
+    out.dash_pressed    = dash_now && !prev_dash_;
+    out.fire_held       = fire_now;
+    out.fire_pressed    = fire_now && !prev_fire_;
+    out.ads_held        = kbm_ads_now || gp_ads_now;
+    out.kbm_ads_pressed = kbm_ads_pressed;
+    out.gp_ads_pressed  = gp_ads_pressed;
+    out.ads_pressed     = kbm_ads_pressed || gp_ads_pressed;
 
     out.mouse_dx = allow_kbm ? mouse_dx_accum_ : 0.0f;
     out.mouse_dy = allow_kbm ? mouse_dy_accum_ : 0.0f;
     out.sensor   = sensor_;
 
     // Always track edges even while paused/unlocked to prevent phantom edges on resume
-    prev_jump_   = jump_now;
-    prev_crouch_ = crouch_now;
-    prev_dash_   = dash_now;
-    prev_fire_   = fire_now;
-    prev_ads_    = ads_now;
+    prev_jump_    = jump_now;
+    prev_crouch_  = crouch_now;
+    prev_dash_    = dash_now;
+    prev_fire_    = fire_now;
+    prev_kbm_ads_ = raw_kbm_ads;
+    prev_gp_ads_  = raw_gp_ads;
 
     return out;
 }

@@ -140,6 +140,7 @@ int main(int argc, char** argv) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     apply_imgui_style();
     ImGui_ImplSDL3_InitForOpenGL(window, gl_ctx);
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
     sb::SandboxApp app{};
@@ -324,12 +325,6 @@ int main(int argc, char** argv) {
                 }
             }
 
-            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT) {
-                if (!app.ui_open && !app.fpv_mode && app.ads_toggle_mode) {
-                    app.ads_toggled_on = !app.ads_toggled_on;
-                }
-            }
-
             // Always invoke handle_sdl_event so KEY_UP releases always clear libfpv held-key state
             app.fpv.handle_sdl_event(e, app.fpv_mode, !app.ui_open);
 
@@ -364,8 +359,9 @@ int main(int argc, char** argv) {
         glViewport(0, 0, fb_w, fb_h);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-        // Apply any fullscreen change toggled from the ImGui checkbox immediately on this frame
+        // Apply any fullscreen or UI/mode/overlay changes toggled from ImGui immediately on this frame
         sync_fullscreen();
+        sync_mouse_capture();
 
         for (GLenum err = glGetError(); err != GL_NO_ERROR; err = glGetError()) {
             std::fprintf(stderr, "[sandbox] OpenGL error: 0x%X\n", err);

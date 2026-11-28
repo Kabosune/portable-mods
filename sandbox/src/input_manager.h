@@ -20,8 +20,10 @@ struct InputFrame {
     bool dash_pressed   = false;
     bool fire_held      = false;
     bool fire_pressed   = false;
-    bool ads_held       = false;
-    bool ads_pressed    = false;
+    bool ads_held        = false;
+    bool ads_pressed     = false;
+    bool kbm_ads_pressed = false;
+    bool gp_ads_pressed  = false;
 
     // Raw mouse look delta accumulated since last step (pixels)
     float mouse_dx = 0.0f;
@@ -92,14 +94,16 @@ private:
 
     float mouse_dx_accum_ = 0.0f;
     float mouse_dy_accum_ = 0.0f;
-    bool  lmb_held_       = false;
-    bool  rmb_held_       = false;
+    bool  lmb_held_          = false;
+    bool  rmb_held_          = false;
+    bool  rmb_pressed_accum_ = false;
 
-    bool prev_jump_   = false;
-    bool prev_crouch_ = false;
-    bool prev_dash_   = false;
-    bool prev_fire_   = false;
-    bool prev_ads_    = false;
+    bool prev_jump_    = false;
+    bool prev_crouch_  = false;
+    bool prev_dash_    = false;
+    bool prev_fire_    = false;
+    bool prev_kbm_ads_ = false;
+    bool prev_gp_ads_  = false;
 };
 
 } // namespace sb

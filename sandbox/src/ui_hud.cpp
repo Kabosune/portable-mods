@@ -132,12 +132,17 @@ static void draw_stick_visualizer_widget(
     }
     dl->AddCircleFilled(raw_pt, 4.2f, IM_COL32(255, 108, 84, 255));
 
-    // Post-weighty-aim scaled output vector & dot (mint green, normalized by y_max)
+    // Post-weighty-aim scaled output vector & dot (mint green, normalized by y_max and radially clamped)
     const float y_max = std::max(1.0f, cfg.sensitivity);
-    const float ox = std::clamp(out_xy[0] / y_max, -1.0f, 1.0f);
-    const float oy = std::clamp(out_xy[1] / y_max, -1.0f, 1.0f);
+    float ox = out_xy[0] / y_max;
+    float oy = out_xy[1] / y_max;
+    const float omag = std::hypot(ox, oy);
+    if (omag > 1.0f) {
+        ox /= omag;
+        oy /= omag;
+    }
     const ImVec2 out_pt = stick_to_pt(ox, oy);
-    if (std::hypot(ox, oy) > 0.005f) {
+    if (omag > 0.005f) {
         dl->AddLine(center, out_pt, IM_COL32(76, 232, 168, 235), 2.2f);
     }
     dl->AddCircleFilled(out_pt, 4.6f, IM_COL32(76, 232, 168, 255));
@@ -526,7 +531,7 @@ void draw_sandbox_ui(SandboxApp& app, int win_w, int win_h) {
             ImGui::SliderFloat("Mouse Sens (deg/px)", &app.mouse_sens_deg_per_px, 0.02f, 0.40f, "%.3f");
             ImGui::Checkbox("Always-Visible HUD (F1)", &app.show_hud);
             ImGui::SameLine();
-            ImGui::Checkbox("ADS Toggle Mode (RMB)", &app.ads_toggle_mode);
+            ImGui::Checkbox("ADS Toggle Mode (RMB / L2)", &app.ads_toggle_mode);
 
             // --- Controls ---
             ImGui::SeparatorText("Controls");
@@ -792,8 +797,7 @@ void draw_sandbox_ui(SandboxApp& app, int win_w, int win_h) {
                 if (ImGui::Checkbox("Show Reticle (Hip)", &sh_hip)) { fc.reticle.show_hip = sh_hip ? 1 : 0; chg = true; }
                 if (ImGui::Checkbox("Show Reticle (ADS)", &sh_ads)) { fc.reticle.show_ads = sh_ads ? 1 : 0; chg = true; }
                 if (ImGui::Checkbox("Smooth Sub-Pixel Reticle", &smooth)) { fc.reticle.smooth_reticle = smooth ? 1 : 0; chg = true; }
-                chg |= ImGui::SliderFloat("Reticle Size",    &fc.reticle.size, 0.5f, 5.0f, "%.1f");
-                chg |= ImGui::SliderFloat("Reticle Opacity", &fc.reticle.opacity, 0.05f, 1.0f, "%.2f");
+                ImGui::TextDisabled("Reticle style, size, color & opacity: Sandbox > Reticle Settings");
 
                 ImGui::Checkbox("Draw Debug Ellipse (fa_get_debug_info)", &app.fa_debug_ellipse);
                 ImGui::Checkbox("Scripted Look Pattern (4.8s cycle)", &app.fa_scripted_look);
