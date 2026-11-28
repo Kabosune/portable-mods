@@ -8,6 +8,27 @@
 
 namespace sb {
 
+// Sandbox reticle style & appearance (high-contrast defaults visible on bright & dark surfaces)
+enum class ReticleStyle : int {
+    CrosshairDot = 0,
+    Crosshair    = 1,
+    Dot          = 2,
+    CircleDot    = 3,
+    Count        = 4,
+};
+
+struct ReticleConfig {
+    ReticleStyle style             = ReticleStyle::CrosshairDot;
+    float        arm_size          = 10.0f; // px (or circle radius in CircleDot mode)
+    float        gap               = 4.0f;  // px
+    float        thickness         = 2.4f;  // px
+    float        dot_size          = 2.5f;  // px radius
+    bool         outline           = true;
+    float        outline_thickness = 1.6f;  // px dark border around strokes/dots
+    float        color[3]          = {0.16f, 1.00f, 0.37f}; // Crisp neon green
+    float        opacity           = 0.95f; // 0.10..1.00
+};
+
 // Sandbox-specific weighty-aim defaults (0.03 inner deadzone, 0.98 outer saturation radius,
 // Balanced curve). Does not alter core weighty_aim.c defaults so core unit tests stay untouched.
 constexpr float kSandboxWaInnerDeadzone = 0.03f;

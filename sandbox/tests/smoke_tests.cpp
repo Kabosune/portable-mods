@@ -678,6 +678,17 @@ static void test_sandbox_wa_defaults_menu_bypass_and_settings() {
     src.fa_preset                = static_cast<int>(FA_PRESET_ARCADE);
     src.fpv_audio_volume         = 0.42f;
     src.fpv_audio_muted          = true;
+    src.reticle_style             = static_cast<int>(sb::ReticleStyle::CircleDot);
+    src.reticle_arm_size          = 14.5f;
+    src.reticle_gap               = 6.5f;
+    src.reticle_thickness         = 3.2f;
+    src.reticle_dot_size          = 3.5f;
+    src.reticle_outline           = false;
+    src.reticle_outline_thickness = 2.4f;
+    src.reticle_color[0]          = 0.08f;
+    src.reticle_color[1]          = 0.96f;
+    src.reticle_color[2]          = 1.00f;
+    src.reticle_opacity           = 0.88f;
 
     const std::string ini_path = (std::filesystem::temp_directory_path() / "portable_mods_sandbox_settings_test.ini").string();
     const bool saved = sb::save_sandbox_settings_file(ini_path, src);
@@ -711,8 +722,25 @@ static void test_sandbox_wa_defaults_menu_bypass_and_settings() {
           dst.physics_tick_hz == src.physics_tick_hz &&
           dst.fa_preset == src.fa_preset &&
           std::fabs(dst.fpv_audio_volume - src.fpv_audio_volume) < 1e-4f &&
-          dst.fpv_audio_muted == src.fpv_audio_muted,
-          "SandboxSettings INI save/load round-trip preserves all fields cleanly");
+          dst.fpv_audio_muted == src.fpv_audio_muted &&
+          dst.reticle_style == src.reticle_style &&
+          std::fabs(dst.reticle_arm_size - src.reticle_arm_size) < 0.01f &&
+          std::fabs(dst.reticle_gap - src.reticle_gap) < 0.01f &&
+          std::fabs(dst.reticle_thickness - src.reticle_thickness) < 0.01f &&
+          std::fabs(dst.reticle_dot_size - src.reticle_dot_size) < 0.01f &&
+          dst.reticle_outline == src.reticle_outline &&
+          std::fabs(dst.reticle_outline_thickness - src.reticle_outline_thickness) < 0.01f &&
+          std::fabs(dst.reticle_color[0] - src.reticle_color[0]) < 1e-3f &&
+          std::fabs(dst.reticle_color[1] - src.reticle_color[1]) < 1e-3f &&
+          std::fabs(dst.reticle_color[2] - src.reticle_color[2]) < 1e-3f &&
+          std::fabs(dst.reticle_opacity - src.reticle_opacity) < 1e-3f,
+          "SandboxSettings INI save/load round-trip preserves all fields including reticle settings");
+
+    // 5. Default ReticleConfig provides high-contrast neon-green outlined crosshair+dot
+    sb::ReticleConfig rdef{};
+    CHECK(rdef.style == sb::ReticleStyle::CrosshairDot && rdef.outline &&
+          rdef.thickness >= 2.0f && rdef.opacity >= 0.90f && rdef.dot_size >= 2.0f,
+          "Default ReticleConfig is high-contrast outlined Crosshair+Dot");
 }
 
 int main() {

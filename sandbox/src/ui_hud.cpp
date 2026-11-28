@@ -154,6 +154,78 @@ static void draw_stick_visualizer_widget(
     ImGui::Dummy(size);
 }
 
+static void draw_reticle_shape(ImDrawList* dl, float rx, float ry, const ReticleConfig& rc) {
+    const float alpha_f = std::clamp(rc.opacity, 0.10f, 1.0f);
+    const int   a_fill  = static_cast<int>(alpha_f * 255.0f + 0.5f);
+    const int   a_out   = static_cast<int>(std::min(1.0f, alpha_f * 0.96f) * 255.0f + 0.5f);
+    const ImU32 col = IM_COL32(
+        static_cast<int>(std::clamp(rc.color[0], 0.0f, 1.0f) * 255.0f + 0.5f),
+        static_cast<int>(std::clamp(rc.color[1], 0.0f, 1.0f) * 255.0f + 0.5f),
+        static_cast<int>(std::clamp(rc.color[2], 0.0f, 1.0f) * 255.0f + 0.5f),
+        a_fill);
+    const ImU32 out_col = IM_COL32(0, 0, 0, a_out);
+
+    const float arm  = std::clamp(rc.arm_size, 2.0f, 32.0f);
+    const float gap  = std::clamp(rc.gap, 0.0f, 20.0f);
+    const float ht   = std::clamp(rc.thickness, 1.0f, 6.0f) * 0.5f;
+    const float ot   = rc.outline ? std::clamp(rc.outline_thickness, 0.5f, 4.0f) : 0.0f;
+    const float dotr = std::clamp(rc.dot_size, 0.0f, 8.0f);
+
+    const bool has_arms   = (rc.style == ReticleStyle::CrosshairDot || rc.style == ReticleStyle::Crosshair);
+    const bool has_circle = (rc.style == ReticleStyle::CircleDot);
+    const bool has_dot    = (rc.style == ReticleStyle::CrosshairDot || rc.style == ReticleStyle::Dot || rc.style == ReticleStyle::CircleDot) && dotr > 0.1f;
+
+    auto arm_rect = [&](int idx, float pad, ImU32 c) {
+        if (idx == 0) dl->AddRectFilled(ImVec2(rx - gap - arm - pad, ry - ht - pad), ImVec2(rx - gap + pad, ry + ht + pad), c);
+        if (idx == 1) dl->AddRectFilled(ImVec2(rx + gap - pad, ry - ht - pad), ImVec2(rx + gap + arm + pad, ry + ht + pad), c);
+        if (idx == 2) dl->AddRectFilled(ImVec2(rx - ht - pad, ry - gap - arm - pad), ImVec2(rx + ht + pad, ry - gap + pad), c);
+        if (idx == 3) dl->AddRectFilled(ImVec2(rx - ht - pad, ry + gap - pad), ImVec2(rx + ht + pad, ry + gap + arm + pad), c);
+    };
+
+    // Pass 1: Solid dark outlines underneath so strokes stay crisp on bright & dark surfaces
+    if (rc.outline && ot > 0.0f) {
+        if (has_arms) {
+            for (int i = 0; i < 4; ++i) arm_rect(i, ot, out_col);
+        }
+        if (has_circle) {
+            const float rad = std::max(3.0f, arm + gap * 0.5f);
+            dl->AddCircle(ImVec2(rx, ry), rad, out_col, 40, ht * 2.0f + ot * 2.0f);
+        }
+        if (has_dot) {
+            dl->AddCircleFilled(ImVec2(rx, ry), dotr + ot, out_col, 24);
+        }
+    }
+
+    // Pass 2: Bright high-contrast colored fill on top
+    if (has_arms) {
+        for (int i = 0; i < 4; ++i) arm_rect(i, 0.0f, col);
+    }
+    if (has_circle) {
+        const float rad = std::max(3.0f, arm + gap * 0.5f);
+        dl->AddCircle(ImVec2(rx, ry), rad, col, 40, ht * 2.0f);
+    }
+    if (has_dot) {
+        dl->AddCircleFilled(ImVec2(rx, ry), dotr, col, 24);
+    }
+}
+
+static void draw_reticle_preview_swatch(const ReticleConfig& rc) {
+    const ImVec2 size(118.0f, 52.0f);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + size.x, p0.y + size.y);
+    const float  mid_x = p0.x + size.x * 0.5f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Split bright / dark background to inspect contrast on both surfaces simultaneously
+    dl->AddRectFilled(p0, ImVec2(mid_x, p1.y), IM_COL32(215, 224, 234, 255), 3.0f, ImDrawFlags_RoundCornersLeft);
+    dl->AddRectFilled(ImVec2(mid_x, p0.y), p1, IM_COL32(24, 28, 36, 255), 3.0f, ImDrawFlags_RoundCornersRight);
+    dl->AddRect(p0, p1, IM_COL32(95, 110, 130, 220), 3.0f);
+    dl->PushClipRect(p0, p1, true);
+    draw_reticle_shape(dl, mid_x, p0.y + size.y * 0.5f, rc);
+    dl->PopClipRect();
+    ImGui::Dummy(size);
+}
+
 static void draw_always_visible_hud(const SandboxApp& app, int win_w, int win_h) {
     if (!app.show_hud) return;
 
@@ -279,23 +351,7 @@ static void draw_always_visible_hud(const SandboxApp& app, int win_w, int win_h)
         }
 
         if (app.fa_out.show_reticle) {
-            const float alpha = std::clamp(app.fa_bank.cfg.reticle.opacity * 2.2f, 0.25f, 1.0f);
-            const float sz    = std::clamp(app.fa_bank.cfg.reticle.size, 0.5f, 6.0f) * 4.5f;
-            const ImU32 col   = IM_COL32(240, 255, 195, static_cast<int>(alpha * 255.0f));
-            const ImU32 shd   = IM_COL32(0, 0, 0, static_cast<int>(alpha * 170.0f));
-            const float gap   = 3.5f;
-
-            // Crisp crosshair with subtle dark outline + center aim dot
-            dl->AddLine(ImVec2(rx - gap - sz, ry), ImVec2(rx - gap, ry), shd, 3.0f);
-            dl->AddLine(ImVec2(rx + gap, ry),      ImVec2(rx + gap + sz, ry), shd, 3.0f);
-            dl->AddLine(ImVec2(rx, ry - gap - sz), ImVec2(rx, ry - gap), shd, 3.0f);
-            dl->AddLine(ImVec2(rx, ry + gap),      ImVec2(rx, ry + gap + sz), shd, 3.0f);
-
-            dl->AddLine(ImVec2(rx - gap - sz, ry), ImVec2(rx - gap, ry), col, 1.5f);
-            dl->AddLine(ImVec2(rx + gap, ry),      ImVec2(rx + gap + sz, ry), col, 1.5f);
-            dl->AddLine(ImVec2(rx, ry - gap - sz), ImVec2(rx, ry - gap), col, 1.5f);
-            dl->AddLine(ImVec2(rx, ry + gap),      ImVec2(rx, ry + gap + sz), col, 1.5f);
-            dl->AddCircleFilled(ImVec2(rx, ry), 2.0f, col);
+            draw_reticle_shape(dl, rx, ry, app.reticle);
         }
 
         // Hit marker X flash at reticle position
@@ -416,6 +472,50 @@ void draw_sandbox_ui(SandboxApp& app, int win_w, int win_h) {
             bool hit_snd = app.weapon_audio.hit_confirm_enabled();
             if (ImGui::Checkbox("Hit-Confirm Sound", &hit_snd)) {
                 app.weapon_audio.set_hit_confirm_enabled(hit_snd);
+            }
+
+            // --- Reticle Settings ---
+            if (ImGui::CollapsingHeader("Reticle Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+                auto& rc = app.reticle;
+                draw_reticle_preview_swatch(rc);
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextDisabled("High-Contrast Presets:");
+                auto color_preset_btn = [&](const char* id, const char* tip, float r, float g, float b) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(r, g, b, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(1.0f, r + 0.12f), std::min(1.0f, g + 0.12f), std::min(1.0f, b + 0.12f), 1.0f));
+                    if (ImGui::Button(id, ImVec2(24.0f, 22.0f))) {
+                        rc.color[0] = r; rc.color[1] = g; rc.color[2] = b;
+                    }
+                    ImGui::PopStyleColor(2);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                };
+                color_preset_btn("##rc_green",  "Neon Green",    0.16f, 1.00f, 0.37f); ImGui::SameLine();
+                color_preset_btn("##rc_cyan",   "Bright Cyan",   0.08f, 0.96f, 1.00f); ImGui::SameLine();
+                color_preset_btn("##rc_yellow", "Bright Yellow", 1.00f, 0.94f, 0.12f); ImGui::SameLine();
+                color_preset_btn("##rc_pink",   "Hot Pink",      1.00f, 0.18f, 0.72f); ImGui::SameLine();
+                color_preset_btn("##rc_red",    "Bright Red",    1.00f, 0.20f, 0.18f); ImGui::SameLine();
+                color_preset_btn("##rc_white",  "Crisp White",   1.00f, 1.00f, 1.00f);
+                if (ImGui::SmallButton("Reset Reticle")) {
+                    rc = ReticleConfig{};
+                }
+                ImGui::EndGroup();
+
+                const char* styles[] = {"Crosshair + Dot", "Crosshair", "Dot", "Circle + Dot"};
+                int st_idx = static_cast<int>(rc.style);
+                if (ImGui::Combo("Reticle Style", &st_idx, styles, 4)) {
+                    rc.style = static_cast<ReticleStyle>(st_idx);
+                }
+                ImGui::ColorEdit3("Reticle Color", rc.color);
+                ImGui::SliderFloat("Reticle Opacity", &rc.opacity, 0.10f, 1.00f, "%.2f");
+                ImGui::SliderFloat("Arm / Circle Size", &rc.arm_size, 2.0f, 32.0f, "%.1f px");
+                ImGui::SliderFloat("Center Gap", &rc.gap, 0.0f, 20.0f, "%.1f px");
+                ImGui::SliderFloat("Stroke Thickness", &rc.thickness, 1.0f, 6.0f, "%.1f px");
+                ImGui::SliderFloat("Center Dot Size", &rc.dot_size, 0.0f, 8.0f, "%.1f px");
+                ImGui::Checkbox("Dark Outline", &rc.outline);
+                if (rc.outline) {
+                    ImGui::SliderFloat("Outline Thickness", &rc.outline_thickness, 0.5f, 4.0f, "%.1f px");
+                }
             }
 
             // --- Display ---

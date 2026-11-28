@@ -42,9 +42,10 @@ struct SandboxApp {
     TeleportId last_teleport            = TeleportId::HubSpawn;
     int        requested_ui_tab         = -1; // -1 = none, 0=Sandbox, 1=Quake Move, 2=Weighty Aim, 3=Free-Aim, 4=FPV
 
-    // Local settings INI persistence
-    std::string settings_path = "sandbox_settings.ini";
-    std::string settings_status;
+    // Local settings INI persistence & high-contrast reticle config
+    std::string   settings_path = "sandbox_settings.ini";
+    std::string   settings_status;
+    ReticleConfig reticle{};
 
     // Camera & FOV settings (world FOV is kept strictly separate from viewmodel FOV)
     float base_world_fovy_deg = 75.0f; // Vertical FOV (~107 deg horizontal at 16:9)

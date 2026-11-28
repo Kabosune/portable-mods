@@ -47,6 +47,17 @@ struct SandboxSettings {
     // FPV audio preferences
     float fpv_audio_volume = 0.65f;
     bool  fpv_audio_muted  = false;
+
+    // High-contrast reticle appearance
+    int   reticle_style             = static_cast<int>(ReticleStyle::CrosshairDot);
+    float reticle_arm_size          = 10.0f;
+    float reticle_gap               = 4.0f;
+    float reticle_thickness         = 2.4f;
+    float reticle_dot_size          = 2.5f;
+    bool  reticle_outline           = true;
+    float reticle_outline_thickness = 1.6f;
+    float reticle_color[3]          = {0.16f, 1.00f, 0.37f};
+    float reticle_opacity           = 0.95f;
 };
 
 // Serialize/deserialize to/from plain-text INI string or file path.

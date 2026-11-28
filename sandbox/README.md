@@ -8,7 +8,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, coordinate-space con
 
 ## Highlights
 
-- **Dedicated `Sandbox` Options Tab:** Full-auto / semi-auto weapon fire mode, settable **Fire Rate (60–1500 RPM)**, procedural SDL3 gunshot & hit-confirm audio volume/mute, **Fullscreen** toggle (`F11` / `Alt+Enter`), World & Viewmodel FOV, **Controller Bypasses Menu** (default ON), Quick Teleports, Reset Player/Drone, Aiming Range stats, and local INI settings persistence (`sandbox_settings.ini`, gitignored).
+- **Dedicated `Sandbox` Options Tab:** Full-auto / semi-auto weapon fire mode, settable **Fire Rate (60–1500 RPM)**, procedural SDL3 gunshot & hit-confirm audio volume/mute, **Reticle Settings** (high-contrast neon-green outlined default, Crosshair+Dot/Crosshair/Dot/Circle+Dot styles, arm/gap/thickness/dot/outline controls, color picker + high-contrast presets & light/dark preview), **Fullscreen** toggle (`F11` / `Alt+Enter`), World & Viewmodel FOV, **Controller Bypasses Menu** (default ON), Quick Teleports, Reset Player/Drone, Aiming Range stats, and local INI settings persistence (`sandbox_settings.ini`, gitignored).
 - **Live Stick & Deadzone Visualizer:** Real-time 2D circular stick plot alongside the `weighty-aim` Bezier response curve showing unit circle (`1.0`), `0.98` outer saturation ring, `0.03` inner deadzone circle, raw right-stick vector, and post-`weighty-aim` scaled output — stays live while the Tuning Panel is open via controller bypass!
 - **FPV Launch Pads & Position Reset:** Instant `R` drone reset (and buttons in both the `Sandbox` and `FPV Drone` tabs) restoring upright launch-pad pose, zero linear/angular velocity, and disarmed idle throttle, plus quick launch-pad teleports and "Set Drone Spawn Here".
 

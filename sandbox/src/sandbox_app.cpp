@@ -208,6 +208,18 @@ SandboxSettings SandboxApp::capture_settings() const {
 
     s.fpv_audio_volume = fpv.audio_volume;
     s.fpv_audio_muted  = fpv.audio_muted;
+
+    s.reticle_style             = static_cast<int>(reticle.style);
+    s.reticle_arm_size          = reticle.arm_size;
+    s.reticle_gap               = reticle.gap;
+    s.reticle_thickness         = reticle.thickness;
+    s.reticle_dot_size          = reticle.dot_size;
+    s.reticle_outline           = reticle.outline;
+    s.reticle_outline_thickness = reticle.outline_thickness;
+    s.reticle_color[0]          = reticle.color[0];
+    s.reticle_color[1]          = reticle.color[1];
+    s.reticle_color[2]          = reticle.color[2];
+    s.reticle_opacity           = reticle.opacity;
     return s;
 }
 
@@ -247,6 +259,18 @@ void SandboxApp::apply_settings(const SandboxSettings& s, bool apply_fullscreen)
 
     fpv.set_audio_volume(s.fpv_audio_volume);
     fpv.set_muted(s.fpv_audio_muted);
+
+    reticle.style             = static_cast<ReticleStyle>(std::clamp(s.reticle_style, 0, static_cast<int>(ReticleStyle::Count) - 1));
+    reticle.arm_size          = std::clamp(s.reticle_arm_size, 2.0f, 32.0f);
+    reticle.gap               = std::clamp(s.reticle_gap, 0.0f, 20.0f);
+    reticle.thickness         = std::clamp(s.reticle_thickness, 1.0f, 6.0f);
+    reticle.dot_size          = std::clamp(s.reticle_dot_size, 0.0f, 8.0f);
+    reticle.outline           = s.reticle_outline;
+    reticle.outline_thickness = std::clamp(s.reticle_outline_thickness, 0.5f, 4.0f);
+    reticle.color[0]          = std::clamp(s.reticle_color[0], 0.0f, 1.0f);
+    reticle.color[1]          = std::clamp(s.reticle_color[1], 0.0f, 1.0f);
+    reticle.color[2]          = std::clamp(s.reticle_color[2], 0.0f, 1.0f);
+    reticle.opacity           = std::clamp(s.reticle_opacity, 0.10f, 1.00f);
 }
 
 bool SandboxApp::save_settings() {

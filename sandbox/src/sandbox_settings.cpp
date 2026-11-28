@@ -75,7 +75,20 @@ std::string serialize_sandbox_settings_ini(const SandboxSettings& s) {
     oss << "physics_tick_hz=" << s.physics_tick_hz << "\n";
     oss << "fa_preset=" << s.fa_preset << "\n";
     oss << "fpv_audio_volume=" << s.fpv_audio_volume << "\n";
-    oss << "fpv_audio_muted=" << (s.fpv_audio_muted ? 1 : 0) << "\n";
+    oss << "fpv_audio_muted=" << (s.fpv_audio_muted ? 1 : 0) << "\n\n";
+
+    oss << "[reticle]\n";
+    oss << "reticle_style=" << s.reticle_style << "\n";
+    oss << "reticle_arm_size=" << s.reticle_arm_size << "\n";
+    oss << "reticle_gap=" << s.reticle_gap << "\n";
+    oss << "reticle_thickness=" << s.reticle_thickness << "\n";
+    oss << "reticle_dot_size=" << s.reticle_dot_size << "\n";
+    oss << "reticle_outline=" << (s.reticle_outline ? 1 : 0) << "\n";
+    oss << "reticle_outline_thickness=" << s.reticle_outline_thickness << "\n";
+    oss << "reticle_color_r=" << s.reticle_color[0] << "\n";
+    oss << "reticle_color_g=" << s.reticle_color[1] << "\n";
+    oss << "reticle_color_b=" << s.reticle_color[2] << "\n";
+    oss << "reticle_opacity=" << s.reticle_opacity << "\n";
     return oss.str();
 }
 
@@ -131,6 +144,17 @@ bool deserialize_sandbox_settings_ini(const std::string& text, SandboxSettings& 
         else if (key == "fa_preset")                 { s.fa_preset = parse_int(val, s.fa_preset, 0, FA_PRESET_COUNT - 1); parsed_keys++; }
         else if (key == "fpv_audio_volume")          { s.fpv_audio_volume = parse_float(val, s.fpv_audio_volume, 0.0f, 1.5f); parsed_keys++; }
         else if (key == "fpv_audio_muted")           { s.fpv_audio_muted = parse_bool(val, s.fpv_audio_muted); parsed_keys++; }
+        else if (key == "reticle_style")             { s.reticle_style = parse_int(val, s.reticle_style, 0, static_cast<int>(ReticleStyle::Count) - 1); parsed_keys++; }
+        else if (key == "reticle_arm_size")          { s.reticle_arm_size = parse_float(val, s.reticle_arm_size, 2.0f, 32.0f); parsed_keys++; }
+        else if (key == "reticle_gap")               { s.reticle_gap = parse_float(val, s.reticle_gap, 0.0f, 20.0f); parsed_keys++; }
+        else if (key == "reticle_thickness")         { s.reticle_thickness = parse_float(val, s.reticle_thickness, 1.0f, 6.0f); parsed_keys++; }
+        else if (key == "reticle_dot_size")          { s.reticle_dot_size = parse_float(val, s.reticle_dot_size, 0.0f, 8.0f); parsed_keys++; }
+        else if (key == "reticle_outline")           { s.reticle_outline = parse_bool(val, s.reticle_outline); parsed_keys++; }
+        else if (key == "reticle_outline_thickness") { s.reticle_outline_thickness = parse_float(val, s.reticle_outline_thickness, 0.5f, 4.0f); parsed_keys++; }
+        else if (key == "reticle_color_r")           { s.reticle_color[0] = parse_float(val, s.reticle_color[0], 0.0f, 1.0f); parsed_keys++; }
+        else if (key == "reticle_color_g")           { s.reticle_color[1] = parse_float(val, s.reticle_color[1], 0.0f, 1.0f); parsed_keys++; }
+        else if (key == "reticle_color_b")           { s.reticle_color[2] = parse_float(val, s.reticle_color[2], 0.0f, 1.0f); parsed_keys++; }
+        else if (key == "reticle_opacity")           { s.reticle_opacity = parse_float(val, s.reticle_opacity, 0.10f, 1.00f); parsed_keys++; }
     }
 
     if (s.wa_outer_deadzone < s.wa_inner_deadzone + 0.05f) {
