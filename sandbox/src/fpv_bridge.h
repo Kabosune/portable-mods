@@ -32,6 +32,8 @@ public:
     bool is_ready() const { return initialized_ && drone_ != nullptr; }
 
     void reset_drone();
+    void set_spawn_pos(Vec3 pos);
+    Vec3 spawn_pos() const { return spawn_pos_; }
     void set_pilot_position(Vec3 feet_pos);
     void set_active_mode(bool fpv_active, FpvCamView view);
 
@@ -84,8 +86,9 @@ private:
     bool             initialized_             = false;
     bool             gl_ready_                = false;
     bool             video_ready_             = false;
-    bool             host_channels_active_    = false;
+    bool             host_channels_active_     = false;
     bool             pending_kb_enter_release_ = false;
+    bool             pending_kb_turtle_release_ = false;
     fpv_drone*       drone_                   = nullptr;
     fpv_frame        frame_{};
     Vec3             spawn_pos_{38.0f, -6.0f, 0.14f};

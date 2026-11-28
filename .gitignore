@@ -23,3 +23,5 @@ sandbox/telemetry_*.csv
 .DS_Store
 Thumbs.db
 imgui.ini
+sandbox_settings.ini
+**/sandbox_settings.ini

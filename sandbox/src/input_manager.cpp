@@ -48,6 +48,8 @@ void InputManager::try_open_gamepad(SDL_JoystickID id) {
 
     sensor_ = {};
     sensor_.available = has_gyro_ ? 1 : 0;
+    last_raw_right_stick_[0] = 0.0f;
+    last_raw_right_stick_[1] = 0.0f;
     SDL_Log("[input] Gamepad connected: %s (gyro=%s, accel=%s)",
             gamepad_name_.c_str(), has_gyro_ ? "yes" : "no", has_accel_ ? "yes" : "no");
 }
@@ -62,11 +64,18 @@ void InputManager::close_gamepad() {
         has_gyro_   = false;
         has_accel_  = false;
         sensor_     = {};
+        last_raw_right_stick_[0] = 0.0f;
+        last_raw_right_stick_[1] = 0.0f;
     }
 }
 
 void InputManager::begin_frame() {
     // Accumulators persist until consumed by simulation step
+}
+
+bool InputManager::is_start_held() const {
+    if (!gamepad_) return false;
+    return SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_START);
 }
 
 void InputManager::process_event(const SDL_Event& e, bool mouse_captured) {
@@ -121,27 +130,27 @@ static inline float normalize_axis(Sint16 raw) {
     return raw < 0 ? (static_cast<float>(raw) / 32768.0f) : (static_cast<float>(raw) / 32767.0f);
 }
 
-InputFrame InputManager::sample(bool mouse_captured) {
+InputFrame InputManager::sample(bool allow_kbm, bool allow_gamepad) {
     InputFrame out{};
     const bool* keys = SDL_GetKeyboardState(nullptr);
 
-    float kb_fwd = 0.0f;
-    float kb_rgt = 0.0f;
-    if (mouse_captured && keys) {
-        if (keys[SDL_SCANCODE_W]) kb_fwd += 1.0f;
-        if (keys[SDL_SCANCODE_S]) kb_fwd -= 1.0f;
-        if (keys[SDL_SCANCODE_D]) kb_rgt += 1.0f;
-        if (keys[SDL_SCANCODE_A]) kb_rgt -= 1.0f;
+    float move_fwd = 0.0f;
+    float move_rgt = 0.0f;
+    if (allow_kbm && keys) {
+        if (keys[SDL_SCANCODE_W]) move_fwd += 1.0f;
+        if (keys[SDL_SCANCODE_S]) move_fwd -= 1.0f;
+        if (keys[SDL_SCANCODE_D]) move_rgt += 1.0f;
+        if (keys[SDL_SCANCODE_A]) move_rgt -= 1.0f;
     }
 
-    bool jump_now   = mouse_captured && keys && keys[SDL_SCANCODE_SPACE];
-    bool crouch_now = mouse_captured && keys && (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]);
-    bool dash_now   = mouse_captured && keys && keys[SDL_SCANCODE_LSHIFT];
-    bool fire_now   = mouse_captured && lmb_held_;
-    bool ads_now    = mouse_captured && rmb_held_;
+    bool jump_now   = allow_kbm && keys && keys[SDL_SCANCODE_SPACE];
+    bool crouch_now = allow_kbm && keys && (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]);
+    bool dash_now   = allow_kbm && keys && keys[SDL_SCANCODE_LSHIFT];
+    bool fire_now   = allow_kbm && lmb_held_;
+    bool ads_now    = allow_kbm && rmb_held_;
 
     if (gamepad_) {
-        // Poll latest sensors directly as well in case sensor events were throttled
+        // Always refresh motion sensors & raw right stick for live UI diagnostics / gyro calibration
         if (has_gyro_) {
             float g[3] = {0, 0, 0};
             if (SDL_GetGamepadSensorData(gamepad_, SDL_SENSOR_GYRO, g, 3)) {
@@ -161,36 +170,45 @@ InputFrame InputManager::sample(bool mouse_captured) {
         }
 
         // SDL Y axes are +down; flip to +up so stick_y = +1 pitches up / moves forward
-        out.left_stick_x  =  normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX));
-        out.left_stick_y  = -normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY));
-        out.look_stick_x  =  normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHTX));
-        out.look_stick_y  = -normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHTY));
-        out.left_trigger  = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)), 0.0f, 1.0f);
-        out.right_trigger = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)), 0.0f, 1.0f);
+        const float raw_rx =  normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHTX));
+        const float raw_ry = -normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHTY));
+        last_raw_right_stick_[0] = raw_rx;
+        last_raw_right_stick_[1] = raw_ry;
 
-        out.gp_south = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_SOUTH);
-        out.gp_east  = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_EAST);
-        out.gp_west  = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_WEST);
-        out.gp_north = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_NORTH);
-        out.gp_lb    = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
-        out.gp_rb    = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+        out.gp_start = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_START);
 
-        // Apply tiny movement stick deadzone only for locomotion (never for look stick!)
-        const float ls_mag = std::hypot(out.left_stick_x, out.left_stick_y);
-        if (ls_mag > 0.12f) {
-            kb_rgt = std::clamp(kb_rgt + out.left_stick_x, -1.0f, 1.0f);
-            kb_fwd = std::clamp(kb_fwd + out.left_stick_y, -1.0f, 1.0f);
+        if (allow_gamepad) {
+            out.left_stick_x  =  normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX));
+            out.left_stick_y  = -normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY));
+            out.look_stick_x  = raw_rx;
+            out.look_stick_y  = raw_ry;
+            out.left_trigger  = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)), 0.0f, 1.0f);
+            out.right_trigger = std::clamp(normalize_axis(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)), 0.0f, 1.0f);
+
+            out.gp_south = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_SOUTH);
+            out.gp_east  = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_EAST);
+            out.gp_west  = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_WEST);
+            out.gp_north = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_NORTH);
+            out.gp_lb    = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+            out.gp_rb    = SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+
+            // Apply tiny movement stick deadzone only for locomotion (never for look stick!)
+            const float ls_mag = std::hypot(out.left_stick_x, out.left_stick_y);
+            if (ls_mag > 0.12f) {
+                move_rgt = std::clamp(move_rgt + out.left_stick_x, -1.0f, 1.0f);
+                move_fwd = std::clamp(move_fwd + out.left_stick_y, -1.0f, 1.0f);
+            }
+
+            jump_now   = jump_now   || out.gp_south;
+            crouch_now = crouch_now || out.gp_east || SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+            dash_now   = dash_now   || out.gp_lb || SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_STICK);
+            fire_now   = fire_now   || (out.right_trigger > 0.45f);
+            ads_now    = ads_now    || (out.left_trigger > 0.35f);
         }
-
-        jump_now   = jump_now   || out.gp_south;
-        crouch_now = crouch_now || out.gp_east || SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
-        dash_now   = dash_now   || out.gp_lb || SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_STICK);
-        fire_now   = fire_now   || (out.right_trigger > 0.45f);
-        ads_now    = ads_now    || (out.left_trigger > 0.35f);
     }
 
-    out.move_forward   = kb_fwd;
-    out.move_right     = kb_rgt;
+    out.move_forward   = move_fwd;
+    out.move_right     = move_rgt;
     out.jump_held      = jump_now;
     out.jump_pressed   = jump_now && !prev_jump_;
     out.crouch_held    = crouch_now;
@@ -199,9 +217,10 @@ InputFrame InputManager::sample(bool mouse_captured) {
     out.fire_held      = fire_now;
     out.fire_pressed   = fire_now && !prev_fire_;
     out.ads_held       = ads_now;
+    out.ads_pressed    = ads_now && !prev_ads_;
 
-    out.mouse_dx = mouse_dx_accum_;
-    out.mouse_dy = mouse_dy_accum_;
+    out.mouse_dx = allow_kbm ? mouse_dx_accum_ : 0.0f;
+    out.mouse_dy = allow_kbm ? mouse_dy_accum_ : 0.0f;
     out.sensor   = sensor_;
 
     // Always track edges even while paused/unlocked to prevent phantom edges on resume
@@ -209,6 +228,7 @@ InputFrame InputManager::sample(bool mouse_captured) {
     prev_crouch_ = crouch_now;
     prev_dash_   = dash_now;
     prev_fire_   = fire_now;
+    prev_ads_    = ads_now;
 
     return out;
 }

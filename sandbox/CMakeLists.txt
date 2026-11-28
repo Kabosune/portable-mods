@@ -120,6 +120,8 @@ endif()
 add_library(sandbox_sim STATIC
   src/gym_map.cpp
   src/physics_world.cpp
+  src/weapon_audio.cpp
+  src/sandbox_settings.cpp
 )
 target_include_directories(sandbox_sim PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(sandbox_sim PUBLIC

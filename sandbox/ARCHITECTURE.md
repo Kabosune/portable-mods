@@ -36,16 +36,19 @@ sandbox/
 ├── README.md                  # Build, run, controls, and test guide
 ├── CMakeLists.txt             # Top-level CMake project (C11 + C++20)
 ├── src/
-│   ├── main.cpp               # App entry, CLI flags (--smoke-frames, --screenshot, --mode), main loop
+│   ├── main.cpp               # App entry, CLI flags (--smoke-frames, --screenshot, --ui-tab), fullscreen & loop
 │   ├── math_types.h           # Vec2/Vec3/Mat4/Quat helpers + Z-up camera basis + boundary transforms
+│   ├── control_helpers.h      # WeaponFireController, MenuInputRouter, AimStats, InputEdgeLatch, FPV RC mapper, sandbox WA defaults
+│   ├── weapon_audio.h / .cpp  # Pure C++20 48kHz stereo procedural gunshot + hit-confirm synthesizer (soft-limited)
+│   ├── sandbox_settings.h/.cpp# Plain-text INI serializer/deserializer for local sandbox_settings.ini
 │   ├── gl_loader.h            # Minimal OpenGL 3.3 Core loader (loaded via SDL_GL_GetProcAddress)
 │   ├── gym_map.h / .cpp       # Unified procedural Testing Gym + dynamic aiming targets + teleports
 │   ├── physics_world.h / .cpp # Jolt Physics world, static gym MeshShape, capsule collide-and-slide, raycasts
-│   ├── input_manager.h / .cpp # SDL3 raw mouse, keyboard, un-deadzoned gamepad sticks, gyro/accel sensors
-│   ├── renderer.h / .cpp      # OpenGL 3.3 Core 3D world, dynamic targets, viewmodel, tracers, FBO, PNG writer
-│   ├── fpv_bridge.h / .cpp    # libfpv lifecycle, static surfaces, camera/OSD/overlay GL3, SDL3 audio stream
-│   ├── sandbox_app.h / .cpp   # Fixed-timestep FPS+FPV simulation state wiring all 4 mods together
-│   └── ui_hud.h / .cpp        # Dear ImGui always-visible HUD (speedometer, reticle, ellipse) + Tuning Panel
+│   ├── input_manager.h / .cpp # SDL3 raw mouse, keyboard, un-deadzoned gamepad sticks, Start button & gyro/accel sensors
+│   ├── renderer.h / .cpp      # OpenGL 3.3 Core 3D world, dynamic targets, viewmodel + muzzle flash, tracers, FBO, PNG writer
+│   ├── fpv_bridge.h / .cpp    # libfpv lifecycle, launch pad resets, static surfaces, camera/OSD/overlay GL3, SDL3 audio stream
+│   ├── sandbox_app.h / .cpp   # Fixed-timestep FPS+FPV simulation state wiring all 4 mods + weapon audio together
+│   └── ui_hud.h / .cpp        # Dear ImGui HUD (speedometer, aiming stats, reticle, ellipse) + Sandbox/Mod Tuning Panel
 └── tests/
     └── smoke_tests.cpp        # Headless automated verification executable (sandbox_smoke_tests)
 ```
@@ -131,9 +134,12 @@ Matches `qm_physics.h` 1:1:
      - Wall-bounce callback (`qm_input_t.wall_probe`) wraps a Jolt sphere/ray sweep from torso height to return outward wall normals in Z-up meters.
      - `qm_step()` computes updated velocity (with optional `speed_scale` applied cleanly at the adapter boundary without mutating presets).
      - Jolt `ExtendedUpdate` / multi-iteration capsule collide-and-slide (`sweep + clip velocity against hit normals + stair step-up`) integrates the player's position cleanly against the static gym `MeshShape`, preventing tunneling on ramps, corners, and low crouch tunnels.
-  3. **Hitscan & Dynamic Targets:**
-     - Left-click / R2 fires along `fa_compute_shot_dir()` from eye position against both Jolt static world geometry and the Aiming Range's static + oscillating/strafing targets.
-     - Hits flash the target, record distance/target ID, trigger a brief HUD hit marker, and spawn a fading 3D laser tracer segment.
+  3. **Hitscan, Continuous Auto-Fire & Procedural Audio:**
+     - `WeaponFireController` supports **Continuous / Full-Auto** (default, configurable `60–1500 RPM`, default `600 RPM`) and **Semi-Auto**, preserving cooldown across release/re-press with zero dropped first shot.
+     - Each shot fires along `fa_compute_shot_dir()` from eye position against Jolt static world geometry and the Aiming Range's static + oscillating/strafing targets, triggers damped spring viewmodel recoil + emissive muzzle flash starburst + fading 3D laser tracer, records `AimStats` (shots, hits, accuracy %, streaks), and synthesizes a soft-limited 48 kHz stereo gunshot (plus a crisp hit-confirm tick on target hits) via `WeaponAudioSynth` over an independent SDL3 `SDL_AudioStream` that coexists safely with `libfpv`'s motor audio stream.
+  4. **Controller Menu Bypass & `Start` Toggle:**
+     - `MenuInputRouter` separates KB+Mouse gating (`allow_kbm`) from Gamepad gating (`allow_gamepad`). When `ui_open == true` and `controller_bypasses_menu == true` (default ON), mouse and keyboard drive Dear ImGui while gamepad sticks, triggers, buttons, and gyro/accel keep driving live FPS/FPV gameplay and the live stick/deadzone visualizer.
+     - Rising-edge `SDL_GAMEPAD_BUTTON_START` toggles `ui_open` cleanly in any mode and updates relative mouse capture immediately.
 
 ### FPV Drone Mode (`libfpv`)
 - Toggle seamlessly via **`F`** or UI button (`FPS` ↔ `FPV`).
@@ -190,13 +196,14 @@ Centered around a hub plaza at `(0, 0, 0)` with clear sightlines and color-coded
 | `Space` | Jump / Auto-bhop / Wall-bounce | Forwarded to `libfpv` |
 | `Ctrl` / `C` | Crouch / Crouch-slide | Forwarded to `libfpv` |
 | `Left Shift` | Dash (Deadlock/Custom) | Forwarded to `libfpv` |
-| `LMB` / `R2` | Fire hitscan shot | — |
+| `LMB` / `R2` | Fire hitscan (Full-Auto default / Semi-Auto) | — |
 | `RMB` / `L2` | Hold ADS (or toggle in UI) | — |
 | `F` | Toggle FPS ↔ FPV Drone mode | Toggle FPS ↔ FPV Drone mode |
 | `V` | — | Cycle FPV / Chase / LOS camera |
-| `R` | Reset player to active spawn | Repair & reset drone to launch pad |
+| `R` | Reset player to active spawn | Repair & reset drone upright to launch pad |
+| `F11` / `Alt+Enter` | Toggle borderless desktop fullscreen | Toggle borderless desktop fullscreen |
 | `F8` | Toggle `libfpv` native overlay | Toggle `libfpv` native overlay |
-| `Tab` / `Esc` | Unlock mouse & open Tuning Panel | Unlock mouse & open Tuning Panel |
+| `Tab` / `Esc` / `Start` | Unlock mouse & toggle Tuning Panel | Unlock mouse & toggle Tuning Panel |
 | `F1` | Toggle HUD visibility | Toggle HUD visibility |
 
 ### HUD & Tuning Panel
@@ -204,13 +211,13 @@ Centered around a hub plaza at `(0, 0, 0)` with clear sightlines and color-coded
   - Bottom-center **Quake Speedometer**: horizontal speed in `m/s` and Quake `UPS` (`m/s * 33.68`), peak speed, mode badge (`GROUND` / `AIR` / `SLIDE` / `DASH`), slope angle readout, stamina pips, and color-coded horizontal speed bar.
   - **`free-aim` Sub-Pixel Reticle:** drawn at exact screen pixel coordinates from `fa_project_reticle_ndc()`, honoring `show_reticle`, `size`, `opacity`, and `smooth_reticle`, plus hit-marker flash on target impact.
   - **Optional `free-aim` Debug Ellipse:** renders `zone_x/zone_y` ellipse, `target`, `display`, `over`, `lead_rate`, `catchup_rate`, `catchup_vel`, `last_input`, and `edge_turn_active` from `fa_get_debug_info()`.
-  - Top-left compact **Mode & Control Hint Bar** (`FPS` / `FPV`, active presets, `Tab: Tuning UI`, `F: FPV Drone`).
+  - Top-left compact **Mode & Control Hint Bar** (`FPS` / `FPV`, active presets, fire mode/RPM, controller bypass badge) and top-right **Aiming Range Stats** badge (shots, hits, accuracy %, current/best hit streak).
 - **Tuning Panel (collapsible tabbed ImGui window when unlocked):**
-  - **Gym & Teleports:** Teleport buttons (Hub, Movement Wing, Aiming Range, FPV Yard), Reset Player, Reset Drone, World FOV & Viewmodel FOV sliders, HUD/overlay toggles.
-  - **`quake-movement`:** All 6 presets, tick-rate selector (`60/120/240 Hz`), `speed_scale`, and live sliders for core ground/air, slide, tap-strafe, dash, and wall-bounce parameters.
-  - **`weighty-aim`:** Curve selector (`Classic`..`Custom 3`), interactive **live Bezier response curve plot** driven by `wa_build_curve_graph()` (deadzone bands, grid ticks, linear ref, Bezier handles, live stick marker), deadzone/sensitivity/turn-boost sliders, Force Original Aim toggle, gyro mode/sensitivity/space/calibration controls, live gyro & accel sensor readout.
-  - **`free-aim`:** Preset picker (`Classic`..`Custom 3`), Force Original Aim toggle, zone/share/lead/catch-up/spring/sway/ADS/edge-auto-turn sliders, reticle profile controls, debug ellipse toggle, scripted look pattern toggle, and CSV telemetry logger (`fa_format_telemetry_csv_header/row`) with file export.
-  - **`fpv-drone`:** FPS/FPV mode toggle, camera view (`FPV`/`Chase`/`LOS`), Arm/Disarm switch (host channel override), Repair & Reset Drone, camera tilt / rate adjustment, motor/beep volume & mute, OSD toggle & style, `libfpv` F8 overlay trigger, and live telemetry (RPM, battery voltage, altitude, speed km/h, armed/arming flags).
+  - **`Sandbox`:** Dedicated Sandbox Options tab grouping **Weapon** (Full-Auto/Semi-Auto, Fire Rate RPM, Gun Audio Volume/Mute, Hit-Confirm Sound), **Display** (Fullscreen, World/Viewmodel FOV, Mouse Sens, HUD/ADS toggles), **Controls** (Controller Bypasses Menu default ON, gamepad/sensor status, `Start` toggle hint), and **Gym & Reset** (Quick Teleports, Reset Player/Drone, Aiming Stats + Reset, and Save/Load/Reset `sandbox_settings.ini`).
+  - **`Quake Move`:** All 6 presets, tick-rate selector (`60/120/240 Hz`), `speed_scale`, and live sliders for core ground/air, slide, tap-strafe, dash, and wall-bounce parameters.
+  - **`Weighty Aim`:** Curve selector (`Classic`..`Custom 3`), sandbox right-stick deadzone defaults (`0.03` inner / `0.98` outer saturation), interactive **live Bezier response curve plot** (`wa_build_curve_graph()`) side-by-side with a **live 2D circular stick & deadzone visualizer** (unit circle, `0.98` outer ring, `0.03` inner deadzone, raw stick & post-`weighty-aim` output vectors), deadzone/sensitivity/turn-boost sliders, Force Original Aim toggle, gyro mode/sensitivity/space/calibration controls, live gyro & accel sensor readout.
+  - **`Free-Aim`:** Preset picker (`Classic`..`Custom 3`), Force Original Aim toggle, zone/share/lead/catch-up/spring/sway/ADS/edge-auto-turn sliders, reticle profile controls, debug ellipse toggle, scripted look pattern toggle, and CSV telemetry logger (`fa_format_telemetry_csv_header/row`) with file export.
+  - **`FPV Drone`:** FPS/FPV mode toggle, prominent **Reset Drone Position (`R`)**, quick **Launch Pads** (FPV Yard, Hub Plaza, Movement Wing, Aiming Range, plus "Set Drone Spawn Here"), camera view (`FPV`/`Chase`/`LOS`), Arm/Disarm switch, camera tilt / rate adjustment, motor/beep volume & mute, OSD toggle, `libfpv` F8 overlay trigger, and live telemetry (RPM, battery voltage, altitude, speed km/h, armed/arming flags).
 
 ---
 

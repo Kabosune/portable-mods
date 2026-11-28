@@ -6,6 +6,17 @@
 
 namespace sb {
 
+void SDLCALL SandboxApp::weapon_audio_callback(void* userdata, SDL_AudioStream* stream, int additional, int) {
+    auto* synth = static_cast<WeaponAudioSynth*>(userdata);
+    if (!synth || !stream) return;
+    static thread_local std::vector<float> pcm;
+    const int frames = additional / static_cast<int>(WeaponAudioSynth::kChannels * sizeof(float));
+    if (frames <= 0) return;
+    pcm.resize(static_cast<size_t>(frames) * WeaponAudioSynth::kChannels);
+    synth->render_stereo(pcm.data(), frames);
+    SDL_PutAudioStreamData(stream, pcm.data(), frames * WeaponAudioSynth::kChannels * static_cast<int>(sizeof(float)));
+}
+
 bool SandboxApp::init(const std::string& fpv_data_dir) {
     gym = GymMap::build();
     input.init();
@@ -13,9 +24,9 @@ bool SandboxApp::init(const std::string& fpv_data_dir) {
     // Initialize quake-movement
     set_qm_preset(QM_PRESET_QUAKE_VQ3);
 
-    // Initialize weighty-aim
+    // Initialize weighty-aim with sandbox right-stick deadzone defaults (0.03 inner, 0.98 outer)
     wa_player_init(&wa_player);
-    wa_select_curve(&wa_player.stick_cfg, WA_CURVE_BALANCED);
+    apply_sandbox_wa_defaults(wa_player.stick_cfg);
 
     // Initialize free-aim (start on Weighty preset so dynamic reticle & weapon spring are live immediately)
     fa_profile_bank_init(&fa_bank);
@@ -30,6 +41,16 @@ bool SandboxApp::init(const std::string& fpv_data_dir) {
         return false;
     }
     teleport(TeleportId::HubSpawn);
+
+    // Open procedural weapon & hit-confirm SDL3 audio stream (coexists safely with libfpv's stream)
+    SDL_AudioSpec weapon_spec{SDL_AUDIO_F32, WeaponAudioSynth::kChannels, WeaponAudioSynth::kSampleRate};
+    weapon_audio_stream = SDL_OpenAudioDeviceStream(
+        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &weapon_spec, weapon_audio_callback, &weapon_audio);
+    if (weapon_audio_stream) {
+        SDL_ResumeAudioStreamDevice(weapon_audio_stream);
+    } else {
+        SDL_Log("[sandbox] Weapon audio device unavailable (continuing silently): %s", SDL_GetError());
+    }
 
     // Initialize libfpv with exact same gym mesh
     if (!fpv.init(gym.static_mesh, gym.drone_spawn, fpv_data_dir)) {
@@ -47,6 +68,10 @@ void SandboxApp::init_gl() {
 
 void SandboxApp::shutdown() {
     toggle_csv_logging(false);
+    if (weapon_audio_stream) {
+        SDL_DestroyAudioStream(weapon_audio_stream);
+        weapon_audio_stream = nullptr;
+    }
     fpv.shutdown();
     renderer.shutdown();
     physics.shutdown();
@@ -85,6 +110,38 @@ void SandboxApp::reset_player() {
     teleport(last_teleport);
 }
 
+void SandboxApp::reset_aim_stats() {
+    aim_stats.reset();
+    last_hit_text.clear();
+    for (auto& t : gym.targets) {
+        t.hit_count = 0;
+        t.hit_flash_timer = 0.0f;
+    }
+}
+
+void SandboxApp::set_fpv_launch_pad(int pad_index) {
+    Vec3 pad = gym.drone_spawn; // 0: FPV Yard Launch Pad (default)
+    switch (pad_index) {
+    case 1: pad = {  0.0f,  -6.0f, 0.14f}; break; // Hub Plaza
+    case 2: pad = {-18.0f, -18.0f, 0.14f}; break; // Movement Wing Runway
+    case 3: pad = {  0.0f,  18.0f, 0.14f}; break; // Aiming Range Lane
+    default: pad = gym.drone_spawn; break;
+    }
+    fpv.set_spawn_pos(pad);
+    fpv.reset_drone();
+}
+
+void SandboxApp::set_drone_spawn_at_player() {
+    const CameraBasis basis = camera_basis_from_yaw_pitch(cam_yaw_rad, 0.0f);
+    Vec3 horiz_fwd{basis.forward.x, basis.forward.y, 0.0f};
+    if (length_sq(horiz_fwd) < 1e-4f) horiz_fwd = {0.0f, 1.0f, 0.0f};
+    horiz_fwd = normalize(horiz_fwd);
+    Vec3 target = player_char.feet_pos + horiz_fwd * 2.0f;
+    target.z = player_char.feet_pos.z + 0.14f;
+    fpv.set_spawn_pos(target);
+    fpv.reset_drone();
+}
+
 void SandboxApp::toggle_fpv_mode() {
     if (!fpv.is_ready()) return;
     fpv_mode = !fpv_mode;
@@ -121,13 +178,128 @@ void SandboxApp::toggle_csv_logging(bool enable) {
     }
 }
 
+SandboxSettings SandboxApp::capture_settings() const {
+    SandboxSettings s{};
+    s.auto_fire                = weapon_fire.auto_fire;
+    s.fire_rpm                 = weapon_fire.fire_rpm;
+    s.gun_audio_volume         = weapon_audio.volume();
+    s.gun_audio_muted          = weapon_audio.muted();
+    s.hit_confirm_sound        = weapon_audio.hit_confirm_enabled();
+    s.fullscreen               = fullscreen;
+    s.base_world_fovy_deg      = base_world_fovy_deg;
+    s.viewmodel_fovy_deg       = viewmodel_fovy_deg;
+    s.mouse_sens_deg_per_px    = mouse_sens_deg_per_px;
+    s.show_hud                 = show_hud;
+    s.ads_toggle_mode          = ads_toggle_mode;
+    s.controller_bypasses_menu = controller_bypasses_menu;
+
+    s.wa_curve                  = static_cast<int>(wa_player.stick_cfg.curve);
+    s.wa_inner_deadzone         = wa_player.stick_cfg.inner_deadzone;
+    s.wa_outer_deadzone         = wa_player.stick_cfg.outer_deadzone;
+    s.wa_sensitivity            = wa_player.stick_cfg.sensitivity;
+    s.wa_vertical_sens          = wa_player.stick_cfg.vertical_sens;
+    s.wa_full_stick_deg_per_sec = full_stick_deg_per_sec;
+    s.wa_gyro_mode              = static_cast<int>(wa_player.gyro_cfg.mode);
+    s.wa_gyro_sensitivity       = wa_player.gyro_cfg.sensitivity;
+
+    s.qm_preset       = static_cast<int>(qm_preset);
+    s.physics_tick_hz = physics_tick_hz;
+    s.fa_preset       = static_cast<int>(fa_bank.cfg.preset);
+
+    s.fpv_audio_volume = fpv.audio_volume;
+    s.fpv_audio_muted  = fpv.audio_muted;
+    return s;
+}
+
+void SandboxApp::apply_settings(const SandboxSettings& s, bool apply_fullscreen) {
+    weapon_fire.auto_fire = s.auto_fire;
+    weapon_fire.fire_rpm  = std::clamp(s.fire_rpm, 60.0f, 1500.0f);
+    weapon_audio.set_volume(s.gun_audio_volume);
+    weapon_audio.set_muted(s.gun_audio_muted);
+    weapon_audio.set_hit_confirm_enabled(s.hit_confirm_sound);
+
+    if (apply_fullscreen) {
+        fullscreen = s.fullscreen;
+    }
+    base_world_fovy_deg      = std::clamp(s.base_world_fovy_deg, 50.0f, 110.0f);
+    current_world_fovy       = base_world_fovy_deg;
+    viewmodel_fovy_deg       = std::clamp(s.viewmodel_fovy_deg, 35.0f, 90.0f);
+    mouse_sens_deg_per_px    = std::clamp(s.mouse_sens_deg_per_px, 0.02f, 0.40f);
+    show_hud                 = s.show_hud;
+    ads_toggle_mode          = s.ads_toggle_mode;
+    controller_bypasses_menu = s.controller_bypasses_menu;
+
+    wa_select_curve(&wa_player.stick_cfg, static_cast<wa_curve_t>(std::clamp(s.wa_curve, 0, WA_CURVE_COUNT - 1)));
+    wa_player.stick_cfg.inner_deadzone = std::clamp(s.wa_inner_deadzone, 0.0f, 0.40f);
+    wa_player.stick_cfg.outer_deadzone = std::clamp(s.wa_outer_deadzone, 0.10f, 1.00f);
+    if (wa_player.stick_cfg.outer_deadzone < wa_player.stick_cfg.inner_deadzone + 0.05f) {
+        wa_player.stick_cfg.outer_deadzone = std::min(1.0f, wa_player.stick_cfg.inner_deadzone + 0.05f);
+    }
+    wa_player.stick_cfg.sensitivity   = std::clamp(s.wa_sensitivity, 0.25f, 2.50f);
+    wa_player.stick_cfg.vertical_sens = std::clamp(s.wa_vertical_sens, 0.25f, 2.00f);
+    full_stick_deg_per_sec            = std::clamp(s.wa_full_stick_deg_per_sec, 60.0f, 450.0f);
+    wa_player.gyro_cfg.mode           = static_cast<wa_gyro_mode_t>(std::clamp(s.wa_gyro_mode, 0, WA_GYRO_COUNT - 1));
+    wa_player.gyro_cfg.sensitivity    = std::clamp(s.wa_gyro_sensitivity, 0.1f, 20.0f);
+
+    set_qm_preset(static_cast<qm_preset_id_t>(std::clamp(s.qm_preset, 0, QM_PRESET_COUNT - 1)));
+    physics_tick_hz = (s.physics_tick_hz == 60 || s.physics_tick_hz == 240) ? s.physics_tick_hz : 120;
+    fa_profile_apply_preset(&fa_bank, static_cast<fa_preset_t>(std::clamp(s.fa_preset, 0, FA_PRESET_COUNT - 1)));
+
+    fpv.set_audio_volume(s.fpv_audio_volume);
+    fpv.set_muted(s.fpv_audio_muted);
+}
+
+bool SandboxApp::save_settings() {
+    const SandboxSettings s = capture_settings();
+    if (save_sandbox_settings_file(settings_path, s)) {
+        settings_status = "Saved to " + settings_path;
+        return true;
+    }
+    settings_status = "Failed to save " + settings_path;
+    return false;
+}
+
+bool SandboxApp::load_settings(bool apply_fullscreen) {
+    SandboxSettings s = capture_settings();
+    if (load_sandbox_settings_file(settings_path, s)) {
+        apply_settings(s, apply_fullscreen);
+        settings_status = "Loaded " + settings_path;
+        return true;
+    }
+    settings_status = "No settings file found";
+    return false;
+}
+
+void SandboxApp::reset_all_defaults() {
+    SandboxSettings def{};
+    wa_player_init(&wa_player);
+    apply_sandbox_wa_defaults(wa_player.stick_cfg);
+    wa_force_original_aim = false;
+    fa_force_original_aim = false;
+    fa_profile_bank_init(&fa_bank);
+    fa_profile_apply_preset(&fa_bank, FA_PRESET_WEIGHTY);
+    fa_reset_state(&fa_state);
+    qm_speed_scale = 1.0f;
+    ads_toggled_on = false;
+    weapon_fire.reset();
+    apply_settings(def, true);
+    settings_status = "Reset all settings to defaults";
+}
+
 void SandboxApp::step_fps_aim(const InputFrame& in, float dt_sec, bool active_gameplay) {
-    const float raw_stick_mag = std::hypot(in.look_stick_x, in.look_stick_y);
+    const float raw_x = demo_stick_active ? demo_stick[0] : (active_gameplay ? in.look_stick_x : input.raw_right_stick_x());
+    const float raw_y = demo_stick_active ? demo_stick[1] : (active_gameplay ? in.look_stick_y : input.raw_right_stick_y());
+    const float raw_stick_mag = std::hypot(raw_x, raw_y);
+    last_raw_stick[0]   = raw_x;
+    last_raw_stick[1]   = raw_y;
     last_look_stick_mag = raw_stick_mag;
 
     if (!active_gameplay) {
-        // Keep gyro calibration ticking while Tuning Panel is open (menu tick)
+        // Keep gyro calibration & stick curve visualizer preview alive while paused in menu
         wa_gyro_menu_tick(&wa_player.gyro_cfg, &wa_player.gyro_state, &in.sensor, dt_sec);
+        wa_stick_state_t preview_st = wa_player.stick_state;
+        wa_process_stick(&wa_player.stick_cfg, &preview_st, raw_x, raw_y, dt_sec,
+                         wa_force_original_aim ? 1 : 0, last_wa_stick_out);
         return;
     }
 
@@ -138,11 +310,13 @@ void SandboxApp::step_fps_aim(const InputFrame& in, float dt_sec, bool active_ga
     wa_process_stick(
         &wa_player.stick_cfg,
         &wa_player.stick_state,
-        in.look_stick_x,
-        in.look_stick_y,
+        raw_x,
+        raw_y,
         dt_sec,
         wa_force_original_aim ? 1 : 0,
         stick_rate);
+    last_wa_stick_out[0] = stick_rate[0];
+    last_wa_stick_out[1] = stick_rate[1];
 
     // Optional repeatable scripted look pattern for A/B free-aim tuning
     float stick_deg[2] = {
@@ -159,15 +333,22 @@ void SandboxApp::step_fps_aim(const InputFrame& in, float dt_sec, bool active_ga
 
     // 2. weighty-aim GyroWiki gyro pipeline (degrees/frame directly; never passes through stick curve)
     const int stick_moving = (raw_stick_mag > 0.15f) ? 1 : 0;
-    wa_process_gyro(
-        &wa_player.gyro_cfg,
-        &wa_player.gyro_state,
-        &in.sensor,
-        aiming_now ? 1 : 0,
-        stick_moving,
-        dt_sec,
-        wa_force_original_aim ? 1 : 0,
-        last_gyro_out_deg);
+    if (wa_player.gyro_cfg.mode == WA_GYRO_OFF) {
+        // Keep sensor availability & auto-calibration warm even while gyro aim mode is Off
+        wa_gyro_menu_tick(&wa_player.gyro_cfg, &wa_player.gyro_state, &in.sensor, dt_sec);
+        last_gyro_out_deg[0] = 0.0f;
+        last_gyro_out_deg[1] = 0.0f;
+    } else {
+        wa_process_gyro(
+            &wa_player.gyro_cfg,
+            &wa_player.gyro_state,
+            &in.sensor,
+            aiming_now ? 1 : 0,
+            stick_moving,
+            dt_sec,
+            wa_force_original_aim ? 1 : 0,
+            last_gyro_out_deg);
+    }
 
     // 3. Raw mouse delta -> degrees (+yaw right, +pitch up; SDL mouse_dy is +down so negate)
     const float mouse_deg[2] = {
@@ -299,11 +480,25 @@ void SandboxApp::fire_hitscan() {
 
     // Start tracer slightly below/right of eye so the beam visibly tracks toward the reticle impact point
     const Vec3 muzzle_world = eye + basis.forward * 0.45f + basis.right * (0.14f * (1.0f - fa_out.ads_amount)) - basis.up * 0.10f;
-    tracers.push_back({muzzle_world, end_pt, hit.target_id >= 0, 0.14f, 0.14f});
-    recoil_kick = 1.0f;
-    fire_cooldown = 0.12f;
+    tracers.push_back({muzzle_world, end_pt, hit.target_id >= 0, 0.12f, 0.12f});
 
-    if (hit.target_id >= 0) {
+    // Damped spring recoil kick + subtle roll & brief muzzle flash
+    shot_visual_seq++;
+    recoil_vel         = std::min(recoil_vel + 16.5f, 22.0f);
+    recoil_kick        = std::min(1.15f, recoil_kick + 0.35f);
+    const float roll_sign = (shot_visual_seq & 1u) ? 1.0f : -1.0f;
+    recoil_roll_deg    = roll_sign * (1.1f + 0.4f * static_cast<float>(shot_visual_seq % 3u));
+    muzzle_flash_timer = 0.045f;
+    muzzle_flash_angle = static_cast<float>(shot_visual_seq) * 1.17f;
+
+    // Synthesize crisp gunshot audio
+    weapon_audio.trigger_gunshot();
+
+    const bool hit_target = (hit.target_id >= 0);
+    aim_stats.record_shot(hit_target);
+
+    if (hit_target) {
+        weapon_audio.trigger_hit_confirm();
         hit_marker_timer = 0.22f;
         hit_marker_was_target = true;
         for (auto& t : gym.targets) {
@@ -330,14 +525,42 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
         fps_smoothed = fps_smoothed * 0.92f + (1.0f / real_dt_sec) * 0.08f;
     }
 
-    const bool mouse_captured = window_focused && !ui_open && !fpv.overlay_wants_input();
-    InputFrame in = input.sample(mouse_captured);
+    // Evaluate menu bypass policy + gamepad Start-button rising-edge toggle
+    const bool start_held = input.is_start_held();
+    const MenuRoutingResult routing = menu_router.evaluate(
+        window_focused, ui_open, fpv.overlay_wants_input(), controller_bypasses_menu, start_held);
+    if (routing.toggle_ui) {
+        if (fpv.overlay_is_open()) {
+            fpv.set_overlay_open(false);
+        } else {
+            ui_open = !ui_open;
+            if (ui_open) fpv.release_all_keys();
+        }
+    }
+
+    InputFrame in = input.sample(routing.allow_kbm, routing.allow_gamepad);
     input.consume_mouse_delta();
 
-    // Decay visual timers
-    recoil_kick      = std::max(0.0f, recoil_kick - dt * 7.5f);
-    fire_cooldown    = std::max(0.0f, fire_cooldown - dt);
-    hit_marker_timer = std::max(0.0f, hit_marker_timer - dt);
+    // Support ADS toggle mode from controller L2 trigger rising edge as well
+    if (ads_toggle_mode && !fpv_mode && routing.allow_gamepad && !routing.allow_kbm && in.ads_pressed) {
+        ads_toggled_on = !ads_toggled_on;
+    }
+
+    // Damped spring decay for viewmodel recoil + muzzle flash + visual timers
+    {
+        constexpr float kRecoilOmega = 24.0f;
+        constexpr float kRecoilZeta  = 0.78f;
+        const float acc = -kRecoilOmega * kRecoilOmega * recoil_kick - 2.0f * kRecoilZeta * kRecoilOmega * recoil_vel;
+        recoil_vel  += acc * dt;
+        recoil_kick += recoil_vel * dt;
+        if (recoil_kick < 0.0f) {
+            recoil_kick = 0.0f;
+            if (recoil_vel < 0.0f) recoil_vel = 0.0f;
+        }
+        recoil_roll_deg *= std::exp(-dt * 18.0f);
+    }
+    muzzle_flash_timer = std::max(0.0f, muzzle_flash_timer - dt);
+    hit_marker_timer   = std::max(0.0f, hit_marker_timer - dt);
     for (auto& tr : tracers) tr.time_left -= dt;
     tracers.erase(std::remove_if(tracers.begin(), tracers.end(),
                                  [](const TracerBeam& b) { return b.time_left <= 0.0f; }),
@@ -347,13 +570,14 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
     gym.update_targets(static_cast<float>(sim_time_sec), dt);
 
     if (!fpv_mode) {
-        const bool active_fps = mouse_captured;
+        const bool active_fps = routing.allow_kbm || routing.allow_gamepad;
 
         // Aim runs once per rendered frame with exact dt for smooth 1:1 mouse/gyro/spring response
         step_fps_aim(in, dt, active_fps);
 
-        // Fire hitscan shot
-        if (active_fps && in.fire_pressed && fire_cooldown <= 0.0f) {
+        // Continuous full-auto (default) or semi-auto hitscan fire at configured RPM
+        const int shots = weapon_fire.update(dt, active_fps, in.fire_held, in.fire_pressed);
+        for (int s = 0; s < shots; ++s) {
             fire_hitscan();
         }
 
@@ -387,8 +611,8 @@ void SandboxApp::step_frame(float real_dt_sec, bool window_focused) {
         edge_latch.clear();
     }
 
-    // Update FPV host channel / keyboard arm pulse every frame
-    fpv.apply_host_controls(in, fpv_mode && !ui_open && !fpv.overlay_wants_input(), input.has_gamepad());
+    // Update FPV host channel / keyboard arm pulse every frame (gamepad bypasses menu when enabled!)
+    fpv.apply_host_controls(in, fpv_mode && routing.allow_gamepad, input.has_gamepad());
 
     // Tick libfpv every frame so drone state/audio/preview stay live even when standing beside it in FPS mode
     fpv.set_active_mode(fpv_mode, fpv_cam_view);
@@ -437,6 +661,9 @@ void SandboxApp::render(int fb_w, int fb_h, int win_w, int win_h, float ui_scale
         vm.rot_pitch_deg      = rot_deg[1];
         vm.ads_amount         = fa_out.ads_amount;
         vm.recoil_kick        = recoil_kick;
+        vm.recoil_roll_deg    = recoil_roll_deg;
+        vm.muzzle_flash       = std::clamp(muzzle_flash_timer / 0.045f, 0.0f, 1.0f);
+        vm.muzzle_flash_angle = muzzle_flash_angle;
         vm.viewmodel_fovy_deg = viewmodel_fovy_deg;
         renderer.render_viewmodel(vm, fb_w, fb_h);
     } else {

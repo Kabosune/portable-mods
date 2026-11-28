@@ -44,6 +44,15 @@ Each module's `PORTING.md` is written as a self-contained porting blueprint:
 
 ---
 
+## Testing Sandbox
+
+A standalone **SDL3 + OpenGL 3.3 Core + Dear ImGui + Jolt Physics** testing gym in [`sandbox/`](sandbox/README.md) links all four mod cores directly (zero duplicated code) so you can playtest movement physics, right-stick curves & gyro aim, unlocked free-aim reticles, continuous hitscan gunfire with procedural audio, and Betaflight SimITL FPV flight in one place.
+
+- **Build, Controls & CLI Guide:** [sandbox/README.md](sandbox/README.md)
+- **Architecture & Coordinate Contracts:** [sandbox/ARCHITECTURE.md](sandbox/ARCHITECTURE.md)
+
+---
+
 ## Running Core Unit Tests
 
 The pure-C11 core libraries (`quake-movement`, `weighty-aim`, and `free-aim`) have zero OS or third-party dependencies.

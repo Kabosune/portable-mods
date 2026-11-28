@@ -19,10 +19,13 @@ struct TracerBeam {
 
 struct ViewmodelRenderParams {
     Vec3  pos_offset_cam{}; // Camera-space offset (+X right, +Y up, -Z forward) from fa_compute_viewmodel_offset
-    float rot_yaw_deg   = 0.0f;
-    float rot_pitch_deg = 0.0f;
-    float ads_amount    = 0.0f;
-    float recoil_kick   = 0.0f;
+    float rot_yaw_deg        = 0.0f;
+    float rot_pitch_deg      = 0.0f;
+    float ads_amount         = 0.0f;
+    float recoil_kick        = 0.0f;
+    float recoil_roll_deg    = 0.0f;
+    float muzzle_flash       = 0.0f; // 0..1 brief flash intensity
+    float muzzle_flash_angle = 0.0f; // radians around barrel axis
     float viewmodel_fovy_deg = 54.0f;
 };
 
@@ -98,6 +101,7 @@ private:
     GpuMesh gym_mesh_;
     GpuMesh unit_box_mesh_;
     GpuMesh weapon_mesh_;
+    GpuMesh muzzle_flash_mesh_;
     GpuMesh drone_body_mesh_;
     GpuMesh drone_prop_mesh_;
 };

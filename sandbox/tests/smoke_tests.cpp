@@ -1,6 +1,8 @@
 #include "control_helpers.h"
 #include "gym_map.h"
 #include "physics_world.h"
+#include "sandbox_settings.h"
+#include "weapon_audio.h"
 #include "qm_physics.h"
 #include "weighty_aim.h"
 #include "free_aim.h"
@@ -399,17 +401,318 @@ static void test_libfpv_integration(const sb::GymMap& gym) {
         CHECK(frame.channels[2] <= -0.95f && (frame.flags & FPV_DRONE_ARMED) != 0,
               "Keyboard FPV Enter arms Betaflight cleanly with idle -1.0 throttle (no THROTTLE block)");
 
-        // Disarm cleanly after test
+        // Disarm cleanly after arm test
         fpv_input_key(FPV_KEY_ENTER, 1);
         fpv_step(1.0f / 60.0f);
         fpv_input_key(FPV_KEY_ENTER, 0);
         fpv_step(1.0f / 60.0f);
+
+        // Regression: FPV drone reset restores exact upright launch-pad pose, zero velocity, and disarmed state
+        {
+            // Push drone off the launch pad with strong linear velocity while armed via host channels
+            float armed_ch[FPV_CHANNEL_COUNT] = {};
+            armed_ch[0] = 0.4f;
+            armed_ch[1] = 0.3f;
+            armed_ch[2] = 0.2f;
+            armed_ch[4] = 1.0f; // Armed
+            armed_ch[5] = 1.0f;
+            fpv_input_set_channels(armed_ch, FPV_CHANNEL_COUNT);
+            const float launch_vel[3] = {8.0f, 6.0f, 9.0f};
+            fpv_drone_push(drone, launch_vel, 1);
+            for (int i = 0; i < 30; ++i) {
+                fpv_step(1.0f / 60.0f);
+                fpv_drone_tick(drone, 1.0f / 60.0f, &frame);
+            }
+            const float displaced_dist = std::hypot(frame.position[0] - gym.drone_spawn.x,
+                                                    frame.position[1] - gym.drone_spawn.y);
+            CHECK(displaced_dist > 1.0f, "Drone displaces away from launch pad after push & flight");
+
+            // Execute full reset: disarm host channels to idle throttle, repair, and reset to upright launch-pad pose
+            float disarmed_ch[FPV_CHANNEL_COUNT] = {};
+            disarmed_ch[2] = -1.0f; // Idle throttle
+            disarmed_ch[4] = -1.0f; // Disarmed
+            disarmed_ch[5] =  1.0f;
+            disarmed_ch[6] = -1.0f;
+            disarmed_ch[7] = -1.0f;
+            disarmed_ch[8] =  1.0f;
+            disarmed_ch[9] = -1.0f;
+            fpv_input_set_channels(disarmed_ch, FPV_CHANNEL_COUNT);
+            fpv_drone_repair(drone);
+            const float spawn_pos[3] = {gym.drone_spawn.x, gym.drone_spawn.y, gym.drone_spawn.z};
+            const float upright_q[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            fpv_drone_reset(drone, spawn_pos, upright_q);
+            for (int i = 0; i < 6; ++i) {
+                fpv_step(1.0f / 60.0f);
+                fpv_drone_tick(drone, 1.0f / 60.0f, &frame);
+            }
+
+            const float pos_err = std::sqrt(
+                (frame.position[0] - gym.drone_spawn.x) * (frame.position[0] - gym.drone_spawn.x) +
+                (frame.position[1] - gym.drone_spawn.y) * (frame.position[1] - gym.drone_spawn.y) +
+                (frame.position[2] - gym.drone_spawn.z) * (frame.position[2] - gym.drone_spawn.z));
+            const float lin_spd = std::sqrt(
+                frame.velocity[0] * frame.velocity[0] +
+                frame.velocity[1] * frame.velocity[1] +
+                frame.velocity[2] * frame.velocity[2]);
+            const float ang_spd = std::sqrt(
+                frame.angular_velocity[0] * frame.angular_velocity[0] +
+                frame.angular_velocity[1] * frame.angular_velocity[1] +
+                frame.angular_velocity[2] * frame.angular_velocity[2]);
+            const bool upright = std::fabs(frame.rotation[3]) > 0.99f &&
+                                 std::fabs(frame.rotation[0]) < 0.08f &&
+                                 std::fabs(frame.rotation[1]) < 0.08f;
+            CHECK(pos_err < 0.25f && upright && lin_spd < 0.5f && ang_spd < 0.5f &&
+                  (frame.flags & FPV_DRONE_ARMED) == 0 && frame.channels[2] <= -0.95f,
+                  "FPV drone reset restores upright launch-pad pose, zero velocity, and disarmed idle state");
+            fpv_input_clear_channels();
+        }
 
         fpv_drone_delete(drone);
     }
 
     fpv_static_surfaces_clear();
     fpv_global_terminate();
+}
+
+static void test_weapon_fire_and_audio_synth() {
+    // 1. Continuous auto-fire cadence at 600 RPM = 10 shots/sec
+    sb::WeaponFireController wf{};
+    CHECK(wf.auto_fire && std::fabs(wf.fire_rpm - 600.0f) < 0.01f,
+          "WeaponFireController defaults to Continuous Full-Auto at 600 RPM");
+
+    const float dt = 1.0f / 60.0f;
+    int shots_600 = 0;
+    for (int f = 0; f < 60; ++f) {
+        shots_600 += wf.update(dt, true, true, f == 0);
+    }
+    CHECK(shots_600 == 10, "Continuous fire at 600 RPM fires exactly 10 shots over 1.0 second");
+
+    // 2. Continuous auto-fire cadence at 1200 RPM = 20 shots/sec
+    wf.reset();
+    wf.fire_rpm = 1200.0f;
+    int shots_1200 = 0;
+    for (int f = 0; f < 60; ++f) {
+        shots_1200 += wf.update(dt, true, true, f == 0);
+    }
+    CHECK(shots_1200 == 20, "Continuous fire at 1200 RPM fires exactly 20 shots over 1.0 second");
+
+    // 3. Releasing & immediately re-pressing respects cooldown (no double-fire burst exploit)
+    wf.reset();
+    wf.fire_rpm = 600.0f; // 0.10s interval
+    const int first = wf.update(dt, true, true, true);
+    const int release_f = wf.update(dt, true, false, false); // cooldown ~0.083s
+    const int repress_early = wf.update(dt, true, true, true); // cooldown ~0.067s -> must NOT double-fire
+    CHECK(first == 1 && release_f == 0 && repress_early == 0,
+          "Quick release/re-press respects remaining RPM cooldown (no burst exploit)");
+
+    // Waiting past cooldown fires immediately on next press (no dropped first shot)
+    for (int f = 0; f < 8; ++f) wf.update(dt, true, false, false);
+    const int fresh_press = wf.update(dt, true, true, true);
+    CHECK(fresh_press == 1, "Fresh press after cooldown expires fires immediately with zero dropped shot");
+
+    // 4. Semi-auto fires exactly 1 shot per rising-edge press even when trigger stays held
+    wf.reset();
+    wf.auto_fire = false;
+    int semi_shots = 0;
+    for (int f = 0; f < 30; ++f) {
+        semi_shots += wf.update(dt, true, true, f == 0);
+    }
+    CHECK(semi_shots == 1, "Semi-auto fires exactly 1 shot per press even while trigger is held");
+
+    // 5. Procedural WeaponAudioSynth: gunshot produces finite, non-zero samples and decays to silence
+    sb::WeaponAudioSynth synth{};
+    synth.set_volume(0.8f);
+    synth.set_muted(false);
+    synth.trigger_gunshot();
+
+    std::vector<float> buf(4800 * 2, 0.0f); // 100 ms
+    synth.render_stereo(buf.data(), 4800);
+    bool all_finite = true;
+    float peak_abs = 0.0f;
+    for (float s : buf) {
+        if (!std::isfinite(s) || std::fabs(s) > 1.0001f) all_finite = false;
+        peak_abs = std::max(peak_abs, std::fabs(s));
+    }
+    CHECK(all_finite && peak_abs > 0.1f,
+          "Procedural gunshot synth generates finite, non-zero stereo PCM within [-1, +1]");
+
+    // Advance past 120 ms total -> must decay cleanly to exact silence
+    std::vector<float> tail(2048 * 2, 0.0f);
+    synth.render_stereo(tail.data(), 2048); // covers 100..142 ms
+    std::vector<float> after(512 * 2, 1.0f);
+    synth.render_stereo(after.data(), 512);
+    float after_peak = 0.0f;
+    for (float s : after) after_peak = std::max(after_peak, std::fabs(s));
+    CHECK(after_peak == 0.0f && synth.active_voice_count() == 0,
+          "Procedural gunshot voice decays cleanly to exact silence");
+
+    // 6. Hit-confirm audio produces finite, non-zero ping and decays cleanly to silence
+    synth.set_hit_confirm_enabled(true);
+    synth.trigger_hit_confirm();
+    std::vector<float> hit_buf(2048 * 2, 0.0f); // ~42.7 ms (> 36 ms voice)
+    synth.render_stereo(hit_buf.data(), 2048);
+    bool hit_finite = true;
+    float hit_peak = 0.0f;
+    for (float s : hit_buf) {
+        if (!std::isfinite(s) || std::fabs(s) > 1.0001f) hit_finite = false;
+        hit_peak = std::max(hit_peak, std::fabs(s));
+    }
+    std::vector<float> hit_after(256 * 2, 1.0f);
+    synth.render_stereo(hit_after.data(), 256);
+    float hit_after_peak = 0.0f;
+    for (float s : hit_after) hit_after_peak = std::max(hit_after_peak, std::fabs(s));
+    CHECK(hit_finite && hit_peak > 0.05f && hit_after_peak == 0.0f,
+          "Procedural hit-confirm synth produces finite non-zero ping and decays to silence");
+
+    // 7. Overlapping rapid fire stress test remains soft-limited & finite
+    for (int i = 0; i < 8; ++i) synth.trigger_gunshot();
+    synth.trigger_hit_confirm();
+    std::vector<float> stress(1024 * 2, 0.0f);
+    synth.render_stereo(stress.data(), 1024);
+    bool stress_ok = true;
+    for (float s : stress) {
+        if (!std::isfinite(s) || std::fabs(s) > 1.0f) { stress_ok = false; break; }
+    }
+    CHECK(stress_ok, "Rapid overlapping gunshots stay finite and soft-limited within [-1, +1]");
+}
+
+static void test_sandbox_wa_defaults_menu_bypass_and_settings() {
+    // 1. Sandbox weighty-aim right-stick defaults: 0.03 inner, 0.98 outer, Balanced curve
+    wa_stick_cfg_t sc{};
+    wa_stick_state_t st{};
+    sb::apply_sandbox_wa_defaults(sc);
+    wa_stick_state_init(&st);
+    CHECK(std::fabs(sc.inner_deadzone - 0.03f) < 1e-5f &&
+          std::fabs(sc.outer_deadzone - 0.98f) < 1e-5f &&
+          sc.curve == WA_CURVE_BALANCED,
+          "Sandbox weighty-aim defaults enforce 0.03 inner and 0.98 outer right-stick thresholds");
+
+    float out_in[2] = {}, out_above[2] = {}, out_98[2] = {}, out_100[2] = {};
+    wa_process_stick(&sc, &st, 0.025f, 0.0f, 1.0f / 60.0f, 0, out_in);
+    wa_process_stick(&sc, &st, 0.06f,  0.0f, 1.0f / 60.0f, 0, out_above);
+    wa_stick_state_init(&st);
+    wa_process_stick(&sc, &st, 0.98f,  0.0f, 1.0f / 60.0f, 0, out_98);
+    wa_stick_state_init(&st);
+    wa_process_stick(&sc, &st, 1.00f,  0.0f, 1.0f / 60.0f, 0, out_100);
+    CHECK(std::fabs(out_in[0]) < 1e-6f && out_above[0] > 0.0f &&
+          std::fabs(out_98[0] - out_100[0]) < 1e-5f && out_98[0] >= 0.99f,
+          "Sandbox right-stick deadzones suppress <=0.03 and saturate cleanly at 0.98 radius");
+
+    // Reset helper restores 0.03 / 0.98 after user edits
+    sc.inner_deadzone = 0.15f;
+    sc.outer_deadzone = 0.85f;
+    sb::reset_sandbox_wa_stick_response(sc);
+    CHECK(std::fabs(sc.inner_deadzone - 0.03f) < 1e-5f && std::fabs(sc.outer_deadzone - 0.98f) < 1e-5f,
+          "Weighty Aim Reset Defaults restores 0.03 inner and 0.98 outer deadzones");
+
+    // 2. Controller bypasses menu (ui_open == true) + Start button rising-edge toggles ui_open
+    sb::MenuInputRouter router{};
+    bool ui_open = true;
+
+    // With bypass ON and ui_open == true: KB+Mouse blocked, Gamepad live!
+    sb::MenuRoutingResult r1 = router.evaluate(true, ui_open, false, true, false);
+    CHECK(!r1.allow_kbm && r1.allow_gamepad && !r1.toggle_ui,
+          "With ui_open=true & controller bypass ON, KB+mouse are blocked while gamepad stays live");
+
+    // With bypass OFF and ui_open == true: both KB+Mouse and Gamepad blocked
+    sb::MenuRoutingResult r2 = router.evaluate(true, ui_open, false, false, false);
+    CHECK(!r2.allow_kbm && !r2.allow_gamepad && !r2.toggle_ui,
+          "With ui_open=true & controller bypass OFF, both KB+mouse and gamepad are paused");
+
+    // Start button rising edge toggles ui_open from true -> false (even with bypass OFF)
+    sb::MenuRoutingResult r3 = router.evaluate(true, ui_open, false, false, true);
+    if (r3.toggle_ui) ui_open = !ui_open;
+    CHECK(r3.toggle_ui && !ui_open && r3.allow_kbm && r3.allow_gamepad,
+          "Start button rising edge closes Tuning Panel and restores KB+mouse & gamepad");
+
+    // Holding Start across next frame must NOT re-toggle
+    sb::MenuRoutingResult r4 = router.evaluate(true, ui_open, false, true, true);
+    CHECK(!r4.toggle_ui && !ui_open,
+          "Holding Start button continuously does not re-toggle Tuning Panel");
+
+    // Release Start, then press Start again -> opens Tuning Panel while keeping gamepad live
+    router.evaluate(true, ui_open, false, true, false);
+    sb::MenuRoutingResult r5 = router.evaluate(true, ui_open, false, true, true);
+    if (r5.toggle_ui) ui_open = !ui_open;
+    CHECK(r5.toggle_ui && ui_open && !r5.allow_kbm && r5.allow_gamepad,
+          "Second Start button press opens Tuning Panel while gamepad bypass keeps controller live");
+
+    // 3. AimStats tracking & reset
+    sb::AimStats stats{};
+    stats.record_shot(true);
+    stats.record_shot(true);
+    stats.record_shot(false);
+    stats.record_shot(true);
+    CHECK(stats.shots_fired == 4 && stats.target_hits == 3 &&
+          stats.current_streak == 1 && stats.best_streak == 2 &&
+          std::fabs(stats.accuracy_pct() - 75.0f) < 0.01f,
+          "AimStats accurately tracks shots, hits, accuracy %, and streaks");
+    stats.reset();
+    CHECK(stats.shots_fired == 0 && stats.target_hits == 0 && stats.best_streak == 0,
+          "AimStats::reset clears all counters cleanly");
+
+    // 4. Local settings INI save/load round-trip
+    sb::SandboxSettings src{};
+    src.auto_fire                = false;
+    src.fire_rpm                 = 925.0f;
+    src.gun_audio_volume         = 1.15f;
+    src.gun_audio_muted          = true;
+    src.hit_confirm_sound        = false;
+    src.fullscreen               = true;
+    src.base_world_fovy_deg      = 92.5f;
+    src.viewmodel_fovy_deg       = 62.0f;
+    src.mouse_sens_deg_per_px    = 0.18f;
+    src.show_hud                 = false;
+    src.ads_toggle_mode          = true;
+    src.controller_bypasses_menu = false;
+    src.wa_curve                 = static_cast<int>(WA_CURVE_CUSTOM2);
+    src.wa_inner_deadzone        = 0.05f;
+    src.wa_outer_deadzone        = 0.96f;
+    src.wa_sensitivity           = 1.45f;
+    src.wa_vertical_sens         = 0.95f;
+    src.wa_full_stick_deg_per_sec = 275.0f;
+    src.wa_gyro_mode             = static_cast<int>(WA_GYRO_AIMING);
+    src.wa_gyro_sensitivity      = 4.25f;
+    src.qm_preset                = static_cast<int>(QM_PRESET_QUAKE_CPMA);
+    src.physics_tick_hz          = 240;
+    src.fa_preset                = static_cast<int>(FA_PRESET_ARCADE);
+    src.fpv_audio_volume         = 0.42f;
+    src.fpv_audio_muted          = true;
+
+    const std::string ini_path = (std::filesystem::temp_directory_path() / "portable_mods_sandbox_settings_test.ini").string();
+    const bool saved = sb::save_sandbox_settings_file(ini_path, src);
+    sb::SandboxSettings dst{};
+    const bool loaded = sb::load_sandbox_settings_file(ini_path, dst);
+    std::error_code ec;
+    std::filesystem::remove(ini_path, ec);
+
+    CHECK(saved && loaded &&
+          dst.auto_fire == src.auto_fire &&
+          std::fabs(dst.fire_rpm - src.fire_rpm) < 0.01f &&
+          std::fabs(dst.gun_audio_volume - src.gun_audio_volume) < 0.01f &&
+          dst.gun_audio_muted == src.gun_audio_muted &&
+          dst.hit_confirm_sound == src.hit_confirm_sound &&
+          dst.fullscreen == src.fullscreen &&
+          std::fabs(dst.base_world_fovy_deg - src.base_world_fovy_deg) < 0.01f &&
+          std::fabs(dst.viewmodel_fovy_deg - src.viewmodel_fovy_deg) < 0.01f &&
+          std::fabs(dst.mouse_sens_deg_per_px - src.mouse_sens_deg_per_px) < 1e-4f &&
+          dst.show_hud == src.show_hud &&
+          dst.ads_toggle_mode == src.ads_toggle_mode &&
+          dst.controller_bypasses_menu == src.controller_bypasses_menu &&
+          dst.wa_curve == src.wa_curve &&
+          std::fabs(dst.wa_inner_deadzone - src.wa_inner_deadzone) < 1e-4f &&
+          std::fabs(dst.wa_outer_deadzone - src.wa_outer_deadzone) < 1e-4f &&
+          std::fabs(dst.wa_sensitivity - src.wa_sensitivity) < 1e-4f &&
+          std::fabs(dst.wa_vertical_sens - src.wa_vertical_sens) < 1e-4f &&
+          std::fabs(dst.wa_full_stick_deg_per_sec - src.wa_full_stick_deg_per_sec) < 0.01f &&
+          dst.wa_gyro_mode == src.wa_gyro_mode &&
+          std::fabs(dst.wa_gyro_sensitivity - src.wa_gyro_sensitivity) < 1e-4f &&
+          dst.qm_preset == src.qm_preset &&
+          dst.physics_tick_hz == src.physics_tick_hz &&
+          dst.fa_preset == src.fa_preset &&
+          std::fabs(dst.fpv_audio_volume - src.fpv_audio_volume) < 1e-4f &&
+          dst.fpv_audio_muted == src.fpv_audio_muted,
+          "SandboxSettings INI save/load round-trip preserves all fields cleanly");
 }
 
 int main() {
@@ -424,6 +727,8 @@ int main() {
         test_quake_movement_integration(gym, physics);
     }
     test_input_latch_and_fpv_gamepad_mapper();
+    test_weapon_fire_and_audio_synth();
+    test_sandbox_wa_defaults_menu_bypass_and_settings();
     test_weighty_aim_and_free_aim_composition();
     test_libfpv_integration(gym);
 

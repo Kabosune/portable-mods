@@ -223,6 +223,31 @@ static MeshData build_weapon_viewmodel_mesh() {
     return m;
 }
 
+static MeshData build_muzzle_flash_mesh() {
+    // Emissive starburst fins centered at local origin (placed at barrel muzzle in render_viewmodel)
+    MeshData m{};
+    const Vec3 hot_core{1.00f, 0.98f, 0.78f};
+    const Vec3 hot_tip{1.00f, 0.62f, 0.14f};
+    const float r = 0.068f;
+    const float w = 0.015f;
+    const float z_len = 0.095f;
+
+    // 4 radial star spikes in XY plane
+    for (int i = 0; i < 4; ++i) {
+        const float a = static_cast<float>(i) * (kPi * 0.25f);
+        const Vec3 dir{std::cos(a), std::sin(a), 0.0f};
+        const Vec3 perp{-std::sin(a) * w, std::cos(a) * w, 0.0f};
+        const Vec3 tip_a = dir * r;
+        const Vec3 tip_b = -dir * r;
+        m.add_tri(perp, -perp, tip_a, hot_tip);
+        m.add_tri(-perp, perp, tip_b, hot_tip);
+    }
+    // 2 crossed longitudinal flame cones along -Z
+    m.add_tri({-w * 1.1f, 0.0f, 0.015f}, { w * 1.1f, 0.0f, 0.015f}, {0.0f, 0.0f, -z_len}, hot_core);
+    m.add_tri({0.0f, -w * 1.1f, 0.015f}, {0.0f,  w * 1.1f, 0.015f}, {0.0f, 0.0f, -z_len}, hot_core);
+    return m;
+}
+
 static MeshData build_drone_body_mesh() {
     // Z-up quadcopter frame (+X right, +Y forward, +Z up)
     MeshData m{};
@@ -279,6 +304,7 @@ bool Renderer::init(const MeshData& gym_mesh) {
     unit_box_mesh_.upload(box_data);
 
     weapon_mesh_.upload(build_weapon_viewmodel_mesh());
+    muzzle_flash_mesh_.upload(build_muzzle_flash_mesh());
     drone_body_mesh_.upload(build_drone_body_mesh());
     drone_prop_mesh_.upload(build_drone_prop_mesh());
     return true;
@@ -288,6 +314,7 @@ void Renderer::shutdown() {
     gym_mesh_.destroy();
     unit_box_mesh_.destroy();
     weapon_mesh_.destroy();
+    muzzle_flash_mesh_.destroy();
     drone_body_mesh_.destroy();
     drone_prop_mesh_.destroy();
 
@@ -446,10 +473,11 @@ void Renderer::render_viewmodel(const ViewmodelRenderParams& vm, int vp_w, int v
         hip_base.z + vm.pos_offset_cam.z + vm.recoil_kick * 0.045f,
     };
 
-    // Apply free-aim yaw (-Y rotation in OpenGL camera space turns right) and pitch (+X rotation pitches up)
+    // Apply free-aim yaw (-Y rotation in OpenGL camera space turns right), pitch (+X pitches up), and subtle recoil roll
     const Mat4 rot_y = mat4_rot_y(-vm.rot_yaw_deg * kDegToRad);
-    const Mat4 rot_x = mat4_rot_x((vm.rot_pitch_deg + vm.recoil_kick * 3.5f) * kDegToRad);
-    const Mat4 model = mat4_mul(mat4_translate(pos), mat4_mul(rot_y, rot_x));
+    const Mat4 rot_x = mat4_rot_x((vm.rot_pitch_deg + vm.recoil_kick * 3.8f) * kDegToRad);
+    const Mat4 rot_z = mat4_rot_z(vm.recoil_roll_deg * kDegToRad);
+    const Mat4 model = mat4_mul(mat4_translate(pos), mat4_mul(rot_y, mat4_mul(rot_x, rot_z)));
 
     glUseProgram(scene_prog_);
     glUniformMatrix4fv(glGetUniformLocation(scene_prog_, "u_viewProj"), 1, GL_FALSE, proj.m);
@@ -460,6 +488,19 @@ void Renderer::render_viewmodel(const ViewmodelRenderParams& vm, int vp_w, int v
     glUniform1f(glGetUniformLocation(scene_prog_, "u_fog_scale"), 0.0f);
 
     weapon_mesh_.draw();
+
+    // Brief emissive muzzle flash starburst at barrel tip during firing
+    if (vm.muzzle_flash > 0.01f) {
+        const float sc = 0.55f + 0.65f * vm.muzzle_flash;
+        const Mat4 flash_local = mat4_mul(
+            mat4_translate({0.0f, 0.012f, -0.605f}),
+            mat4_mul(mat4_rot_z(vm.muzzle_flash_angle), mat4_scale({sc, sc, sc})));
+        const Mat4 flash_model = mat4_mul(model, flash_local);
+        glUniformMatrix4fv(glGetUniformLocation(scene_prog_, "u_model"), 1, GL_FALSE, flash_model.m);
+        glUniform3f(glGetUniformLocation(scene_prog_, "u_tint"), 1.0f, 0.92f, 0.55f);
+        glUniform1f(glGetUniformLocation(scene_prog_, "u_emissive"), 1.0f);
+        muzzle_flash_mesh_.draw();
+    }
 }
 
 void Renderer::blit_fbo_to_screen(int fb_w, int fb_h) {

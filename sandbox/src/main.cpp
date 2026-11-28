@@ -23,9 +23,14 @@ struct CliOptions {
     std::string mode          = "fps";      // fps | fpv
     std::string fpv_view      = "fpv";      // fpv | chase | los
     std::string teleport      = "hub";      // hub | movement | aim | fpv
+    std::string ui_tab;                     // sandbox | move | weighty | freeaim | fpv
     std::string fpv_data_dir;
     bool        ui_open       = false;
     bool        debug_ellipse = false;
+    bool        fullscreen    = false;
+    bool        demo_stick    = false;
+    float       demo_stick_x  = 0.0f;
+    float       demo_stick_y  = 0.0f;
 };
 
 static CliOptions parse_cli(int argc, char** argv) {
@@ -40,11 +45,31 @@ static CliOptions parse_cli(int argc, char** argv) {
         else if (a == "--mode")          o.mode = next();
         else if (a == "--fpv-view")      o.fpv_view = next();
         else if (a == "--teleport")      o.teleport = next();
+        else if (a == "--ui-tab")        o.ui_tab = next();
         else if (a == "--fpv-data-dir")  o.fpv_data_dir = next();
         else if (a == "--ui-open")       o.ui_open = true;
         else if (a == "--debug-ellipse") o.debug_ellipse = true;
+        else if (a == "--fullscreen")    o.fullscreen = true;
+        else if (a == "--demo-stick") {
+            const std::string val = next();
+            float sx = 0.0f, sy = 0.0f;
+            if (std::sscanf(val.c_str(), "%f,%f", &sx, &sy) == 2) {
+                o.demo_stick   = true;
+                o.demo_stick_x = std::clamp(sx, -1.0f, 1.0f);
+                o.demo_stick_y = std::clamp(sy, -1.0f, 1.0f);
+            }
+        }
     }
     return o;
+}
+
+static int parse_ui_tab_index(const std::string& name) {
+    if (name == "sandbox") return 0;
+    if (name == "move" || name == "quake") return 1;
+    if (name == "weighty" || name == "weighty-aim") return 2;
+    if (name == "freeaim" || name == "free-aim") return 3;
+    if (name == "fpv" || name == "drone") return 4;
+    return -1;
 }
 
 static void apply_imgui_style() {
@@ -118,6 +143,9 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
     sb::SandboxApp app{};
+    if (const char* base_path = SDL_GetBasePath(); base_path && base_path[0] != '\0') {
+        app.settings_path = std::string(base_path) + "sandbox_settings.ini";
+    }
     if (!app.init(cli.fpv_data_dir)) {
         std::fprintf(stderr, "[sandbox] SandboxApp::init failed\n");
         ImGui_ImplOpenGL3_Shutdown();
@@ -130,7 +158,12 @@ int main(int argc, char** argv) {
     }
     app.init_gl();
 
-    // Apply CLI launch configuration
+    // Auto-load local sandbox_settings.ini on interactive launch (skip during deterministic --smoke-frames runs)
+    if (cli.smoke_frames == 0) {
+        app.load_settings(true);
+    }
+
+    // Apply CLI launch configuration (overrides loaded settings cleanly)
     if (cli.teleport == "movement")      app.teleport(sb::TeleportId::MovementWing);
     else if (cli.teleport == "aim")      app.teleport(sb::TeleportId::AimingRange);
     else if (cli.teleport == "fpv")      app.teleport(sb::TeleportId::FpvYard);
@@ -146,11 +179,37 @@ int main(int argc, char** argv) {
     }
     app.ui_open          = cli.ui_open;
     app.fa_debug_ellipse = cli.debug_ellipse;
+    app.requested_ui_tab = parse_ui_tab_index(cli.ui_tab);
+    if (cli.fullscreen) {
+        app.fullscreen = true;
+    }
+    if (cli.demo_stick) {
+        app.demo_stick_active = true;
+        app.demo_stick[0]     = cli.demo_stick_x;
+        app.demo_stick[1]     = cli.demo_stick_y;
+    }
+
+    bool applied_fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
 
     auto sync_mouse_capture = [&]() {
         const bool capture = (cli.smoke_frames == 0) && !app.ui_open && !app.fpv.overlay_wants_input() && !app.fpv_mode;
         SDL_SetWindowRelativeMouseMode(window, capture);
     };
+
+    auto sync_fullscreen = [&]() {
+        if (cli.smoke_frames > 0) return;
+        if (app.fullscreen != applied_fullscreen) {
+            if (SDL_SetWindowFullscreen(window, app.fullscreen)) {
+                applied_fullscreen = app.fullscreen;
+            } else {
+                SDL_Log("[sandbox] SDL_SetWindowFullscreen failed: %s", SDL_GetError());
+                app.fullscreen = applied_fullscreen;
+            }
+            sync_mouse_capture();
+        }
+    };
+
+    sync_fullscreen();
     sync_mouse_capture();
     SDL_StartTextInput(window);
 
@@ -173,12 +232,26 @@ int main(int argc, char** argv) {
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            // Always forward release & window events to Dear ImGui so keys/buttons never stick across panel toggles
+            const bool is_gamepad_event =
+                e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION ||
+                e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                e.type == SDL_EVENT_GAMEPAD_BUTTON_UP ||
+                e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN ||
+                e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION ||
+                e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP ||
+                e.type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE ||
+                e.type == SDL_EVENT_JOYSTICK_AXIS_MOTION ||
+                e.type == SDL_EVENT_JOYSTICK_HAT_MOTION ||
+                e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN ||
+                e.type == SDL_EVENT_JOYSTICK_BUTTON_UP;
+
+            // Always forward release & window events to Dear ImGui so keys/buttons never stick across panel toggles.
+            // When controller_bypasses_menu is ON, keep gamepad events routed exclusively to gameplay.
             const bool is_release_or_win =
                 e.type == SDL_EVENT_KEY_UP ||
                 e.type == SDL_EVENT_MOUSE_BUTTON_UP ||
                 (e.type >= SDL_EVENT_WINDOW_FIRST && e.type <= SDL_EVENT_WINDOW_LAST);
-            if (app.ui_open || is_release_or_win) {
+            if ((app.ui_open || is_release_or_win) && !(app.controller_bypasses_menu && is_gamepad_event)) {
                 ImGui_ImplSDL3_ProcessEvent(&e);
             }
 
@@ -187,8 +260,24 @@ int main(int argc, char** argv) {
                 break;
             }
 
+            if (e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
+                applied_fullscreen = true;
+                app.fullscreen     = true;
+            } else if (e.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+                applied_fullscreen = false;
+                app.fullscreen     = false;
+            }
+
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode key = e.key.key;
+
+                // F11 or Alt+Enter toggles borderless desktop fullscreen cleanly (works in any UI/mode state)
+                const bool alt_enter = ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && (e.key.mod & SDL_KMOD_ALT) != 0);
+                if (key == SDLK_F11 || alt_enter) {
+                    app.fullscreen = !app.fullscreen;
+                    sync_fullscreen();
+                    continue;
+                }
 
                 // F8 toggles libfpv's built-in overlay; close Tuning Panel so overlay input is never trapped
                 if (key == SDLK_F8) {
@@ -248,10 +337,12 @@ int main(int argc, char** argv) {
             app.input.process_event(e, capture_now);
         }
 
-        sync_mouse_capture();
-
         const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0 || (cli.smoke_frames > 0);
         app.step_frame(dt, focused);
+
+        // Sync fullscreen & mouse capture after step_frame (handles Start button toggle & UI checkbox changes)
+        sync_fullscreen();
+        sync_mouse_capture();
 
         int fb_w = 0, fb_h = 0, win_w = 0, win_h = 0;
         SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
@@ -272,6 +363,9 @@ int main(int argc, char** argv) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, fb_w, fb_h);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        // Apply any fullscreen change toggled from the ImGui checkbox immediately on this frame
+        sync_fullscreen();
 
         for (GLenum err = glGetError(); err != GL_NO_ERROR; err = glGetError()) {
             std::fprintf(stderr, "[sandbox] OpenGL error: 0x%X\n", err);

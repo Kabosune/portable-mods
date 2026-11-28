@@ -199,13 +199,60 @@ void FpvBridge::shutdown() {
     }
 }
 
+void FpvBridge::set_spawn_pos(Vec3 pos) {
+    spawn_pos_ = pos;
+    if (initialized_) {
+        const float home[3] = {spawn_pos_.x, spawn_pos_.y, spawn_pos_.z};
+        fpv_gps_set_home(home);
+    }
+}
+
 void FpvBridge::reset_drone() {
     if (!drone_) return;
+
+    // 1. Release all held flight keys & reset gamepad RC latch switches to disarmed/idle
+    release_all_keys();
+    gp_rc.reset_switches();
+
+    // 2. If host RC channels are active, immediately push disarmed + idle-throttle channels
+    if (host_channels_active_) {
+        float ch[FPV_CHANNEL_COUNT] = {};
+        ch[0] = 0.0f;
+        ch[1] = 0.0f;
+        ch[2] = -1.0f; // Idle throttle
+        ch[3] = 0.0f;
+        ch[4] = -1.0f; // Disarmed (AUX1)
+        ch[5] = ui_angle_mode ? 1.0f : -1.0f;
+        ch[6] = -1.0f; // Beeper off
+        ch[7] = -1.0f; // Turtle off
+        ch[8] = 1.0f;  // Air mode
+        ch[9] = show_osd ? -1.0f : 1.0f;
+        fpv_input_set_channels(ch, FPV_CHANNEL_COUNT);
+    } else {
+        // In libfpv's built-in keyboard mode, disarm & clear turtle if currently latched
+        if ((frame_.flags & FPV_DRONE_ARMED) != 0 || frame_.channels[4] > 0.0f) {
+            fpv_input_key(FPV_KEY_ENTER, 1);
+            pending_kb_enter_release_ = true;
+        }
+        if ((frame_.flags & FPV_DRONE_TURTLE) != 0 || frame_.channels[7] > 0.0f) {
+            fpv_input_key('T', 1);
+            pending_kb_turtle_release_ = true;
+        }
+    }
+
+    // 3. Repair props/battery/motors and teleport upright with zero linear & angular velocity
     fpv_drone_repair(drone_);
     const float pos[3] = {spawn_pos_.x, spawn_pos_.y, spawn_pos_.z};
     const float rot[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     fpv_drone_reset(drone_, pos, rot);
-    gp_rc.reset_switches();
+
+    for (int i = 0; i < 4; ++i) {
+        prop_angles_[i] = 0.0;
+    }
+
+    // 4. Refresh presentation snapshot immediately so UI and camera reflect the launch pad pose
+    frame_.struct_size = sizeof(frame_);
+    fpv_drone_tick(drone_, 0.0f, &frame_);
 }
 
 void FpvBridge::set_pilot_position(Vec3 feet_pos) {
@@ -238,6 +285,10 @@ void FpvBridge::release_all_keys() {
     if (pending_kb_enter_release_) {
         fpv_input_key(FPV_KEY_ENTER, 0);
         pending_kb_enter_release_ = false;
+    }
+    if (pending_kb_turtle_release_) {
+        fpv_input_key('T', 0);
+        pending_kb_turtle_release_ = false;
     }
 }
 
@@ -306,10 +357,14 @@ void FpvBridge::trigger_arm_toggle(bool has_gamepad) {
 void FpvBridge::apply_host_controls(const InputFrame& in, bool fpv_active, bool has_gamepad) {
     if (!initialized_) return;
 
-    // Complete synthetic Enter pulse on the following frame so libfpv sees a clean rising edge
+    // Complete synthetic Enter / Turtle pulses on the following frame so libfpv sees clean edges
     if (pending_kb_enter_release_) {
         fpv_input_key(FPV_KEY_ENTER, 0);
         pending_kb_enter_release_ = false;
+    }
+    if (pending_kb_turtle_release_) {
+        fpv_input_key('T', 0);
+        pending_kb_turtle_release_ = false;
     }
 
     if (fpv_active && use_gamepad_rc && has_gamepad) {

@@ -1,10 +1,31 @@
 #pragma once
 
+#include "weighty_aim.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 
 namespace sb {
+
+// Sandbox-specific weighty-aim defaults (0.03 inner deadzone, 0.98 outer saturation radius,
+// Balanced curve). Does not alter core weighty_aim.c defaults so core unit tests stay untouched.
+constexpr float kSandboxWaInnerDeadzone = 0.03f;
+constexpr float kSandboxWaOuterDeadzone = 0.98f;
+
+inline void apply_sandbox_wa_defaults(wa_stick_cfg_t& cfg) {
+    wa_stick_cfg_defaults(&cfg);
+    wa_select_curve(&cfg, WA_CURVE_BALANCED);
+    cfg.inner_deadzone = kSandboxWaInnerDeadzone;
+    cfg.outer_deadzone = kSandboxWaOuterDeadzone;
+}
+
+inline void reset_sandbox_wa_stick_response(wa_stick_cfg_t& cfg) {
+    wa_reset_stick_response(&cfg);
+    wa_select_curve(&cfg, WA_CURVE_BALANCED);
+    cfg.inner_deadzone = kSandboxWaInnerDeadzone;
+    cfg.outer_deadzone = kSandboxWaOuterDeadzone;
+}
 
 // Latches rising-edge button presses across frames where render FPS > physics tick rate
 // (so 0-substep frames never drop jump/crouch/dash edges before the next physics tick).
@@ -23,6 +44,139 @@ struct InputEdgeLatch {
         jump_pressed   = false;
         crouch_pressed = false;
         dash_pressed   = false;
+    }
+};
+
+// Continuous (Full-Auto) & Semi-Auto weapon cadence controller.
+// - Full-Auto (default): holding Fire fires cleanly at 60.0 / fire_rpm seconds per shot.
+//   Releasing & re-pressing respects remaining cooldown (no burst exploit), and pressing
+//   after cooldown reaches 0 fires immediately with zero dropped first shot.
+// - Semi-Auto: fires at most once per rising-edge press, also respecting fire_rpm cooldown.
+struct WeaponFireController {
+    bool  auto_fire    = true;
+    float fire_rpm     = 600.0f; // 60..1500 RPM
+    float cooldown_sec = 0.0f;
+
+    float shot_interval_sec() const {
+        const float rpm = std::clamp(fire_rpm, 60.0f, 1500.0f);
+        return 60.0f / rpm;
+    }
+
+    void reset() {
+        cooldown_sec = 0.0f;
+    }
+
+    // Returns number of shots triggered on this frame (typically 0 or 1; capped at 4 for huge dt).
+    int update(float dt_sec, bool active, bool fire_held, bool fire_pressed) {
+        const float dt = std::max(0.0f, dt_sec);
+        const float interval = shot_interval_sec();
+
+        if (!active) {
+            cooldown_sec = std::max(0.0f, cooldown_sec - dt);
+            return 0;
+        }
+
+        if (!auto_fire) {
+            cooldown_sec = std::max(0.0f, cooldown_sec - dt);
+            if (fire_pressed && cooldown_sec <= 0.0f) {
+                cooldown_sec = interval;
+                return 1;
+            }
+            return 0;
+        }
+
+        // Full-auto mode:
+        // If trigger is not held (and not just pressed), decay cooldown cleanly down to 0.
+        if (!fire_held && !fire_pressed) {
+            cooldown_sec = std::max(0.0f, cooldown_sec - dt);
+            return 0;
+        }
+
+        // Trigger is held or newly pressed: advance timer and fire whenever cooldown <= 0,
+        // carrying fractional remainder so average cadence matches fire_rpm accurately.
+        int shots = 0;
+        if (cooldown_sec <= 0.0f) {
+            // Immediate first shot on rising press or ready hold
+            shots = 1;
+            cooldown_sec = interval;
+        } else {
+            cooldown_sec -= dt;
+            while (cooldown_sec <= 1e-6f && shots < 4) {
+                shots++;
+                cooldown_sec += interval;
+            }
+            if (cooldown_sec < 0.0f) {
+                cooldown_sec = 0.0f;
+            }
+        }
+        return shots;
+    }
+};
+
+// Pure routing policy for Tuning Panel menu bypass & gamepad Start-button toggle.
+struct MenuRoutingResult {
+    bool allow_kbm     = false; // Keyboard + Mouse drive game simulation
+    bool allow_gamepad = false; // Gamepad sticks, triggers, buttons & gyro drive game simulation
+    bool toggle_ui     = false; // Rising-edge Start button requested toggling ui_open
+};
+
+struct MenuInputRouter {
+    bool prev_start = false;
+
+    void reset() {
+        prev_start = false;
+    }
+
+    MenuRoutingResult evaluate(
+        bool window_focused,
+        bool ui_open,
+        bool fpv_overlay_wants_input,
+        bool controller_bypasses_menu,
+        bool start_held) {
+        MenuRoutingResult r{};
+        // Start button rising edge always toggles the menu cleanly regardless of bypass setting
+        r.toggle_ui = start_held && !prev_start;
+        prev_start = start_held;
+
+        const bool effective_ui_open = r.toggle_ui ? !ui_open : ui_open;
+        r.allow_kbm = window_focused && !effective_ui_open && !fpv_overlay_wants_input;
+        r.allow_gamepad = window_focused && !fpv_overlay_wants_input &&
+                          (!effective_ui_open || controller_bypasses_menu);
+        return r;
+    }
+};
+
+// Aiming Range live accuracy & hit-streak statistics
+struct AimStats {
+    int shots_fired    = 0;
+    int target_hits    = 0;
+    int current_streak = 0;
+    int best_streak    = 0;
+
+    float accuracy_pct() const {
+        return shots_fired > 0
+            ? (100.0f * static_cast<float>(target_hits) / static_cast<float>(shots_fired))
+            : 0.0f;
+    }
+
+    void record_shot(bool hit_target) {
+        shots_fired++;
+        if (hit_target) {
+            target_hits++;
+            current_streak++;
+            if (current_streak > best_streak) {
+                best_streak = current_streak;
+            }
+        } else {
+            current_streak = 0;
+        }
+    }
+
+    void reset() {
+        shots_fired    = 0;
+        target_hits    = 0;
+        current_streak = 0;
+        best_streak    = 0;
     }
 };
 
